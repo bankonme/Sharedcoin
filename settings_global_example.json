@@ -1,0 +1,13 @@
+{
+	"sharedcoin.com" : {
+		"wallet_guid" : "Your Wallet Indetifier",
+		"wallet_shared_key" : "Your Shared Key",
+		"wallet_password" : "The Main Wallet Password",
+		"wallet_second_password" : "Second Wallet Password",
+		"pk_seed" : "Seed to use when generating private keys",
+		"token_encryption_password" : "Encryption key to use for tokens (Think of it a a cookie encryption password)",
+		"auth_code" : "The authenticaiton code for the admin panel",
+		"api_root" : "https://blockchain.info",
+		"api_code" : "Apply for an API code on blockchain.info"
+ 	}
+}

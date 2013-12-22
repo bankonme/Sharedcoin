@@ -1,0 +1,16 @@
+settings_global.json
+settings_global.aes.json
+apache-tomcat/logs
+apache-tomcat/work
+website/build
+sharedcoin.com
+apache-tomcat
+build.xml
+deploy.sh
+.idea
+encryptsettings.sh
+.DS_Store
+.settings
+.project
+.classpath
+*.iml
