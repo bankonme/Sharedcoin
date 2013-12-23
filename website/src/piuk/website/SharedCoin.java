@@ -118,6 +118,7 @@ public class SharedCoin extends HttpServlet {
         long lastCheckedConfirmed = 0;
         long completedTime;
         int pushCount = 0;
+        int nParticipants;
 
         @Override
         public int compareTo(CompletedTransaction o) {
@@ -130,6 +131,9 @@ public class SharedCoin extends HttpServlet {
             return 0;
         }
 
+        public int getnParticipants() {
+            return nParticipants;
+        }
 
         public int getPushCount() {
             return pushCount;
@@ -393,8 +397,9 @@ public class SharedCoin extends HttpServlet {
 
                 int minDeletionBlockHeight = latestBlockHeight - 6;
 
-                if (minDeletionBlockHeight == lastMinDeletionBlockHeight)
+                if (minDeletionBlockHeight == lastMinDeletionBlockHeight) {
                     return;
+                }
 
                 MyRemoteWallet wallet = getWallet();
 
@@ -877,6 +882,8 @@ public class SharedCoin extends HttpServlet {
                     continue;
                 } catch (Exception e) {
                     completedTransaction.isConfirmedBroadcastSuccessfully = false;
+
+                    e.printStackTrace();
                 }
 
                 if (!didAlreadyFail)
@@ -1188,6 +1195,7 @@ public class SharedCoin extends HttpServlet {
             completedTransaction.pushCount = 0;
             completedTransaction.lastCheckedConfirmed = 0;
             completedTransaction.proposalID = getProposalID();
+            completedTransaction.nParticipants = getOffers().size();
 
             recentlyCompletedTransactions.put(new Hash(getTransaction().getHash().getBytes()), completedTransaction);
 
@@ -1211,8 +1219,9 @@ public class SharedCoin extends HttpServlet {
             }
 
             try {
-                if (getNSigned() < getNSignaturesNeeded())
+                if (getNSigned() < getNSignaturesNeeded()) {
                     throw new Exception("Cannot finalize transaction as not all inputs are signed");
+                }
 
                 int ii = 0;
                 for (TransactionInput input : getTransaction().getInputs()) {
@@ -1466,7 +1475,7 @@ public class SharedCoin extends HttpServlet {
 
                     alreadyTested.add(outpoint);
 
-                    if (selectedBeans.contains(outpoint) || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
+                    if (selectedBeans.contains(outpoint) || wasOutpointRecentlySpentByUs(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
                         continue;
                     }
 
@@ -2185,6 +2194,16 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
+    public static Proposal findActiveProposalByTransaction(Hash hash) {
+        for (Proposal proposal : activeProposals.values()) {
+            if (proposal.isFinalized && proposal.transaction != null)
+                if (new Hash(proposal.transaction.getHash().getBytes()).equals(hash))
+                    return proposal;
+        }
+
+        return null;
+    }
+
     public static Proposal findActiveProposalFromOffer(Offer offer) {
         for (Proposal proposal : activeProposals.values()) {
             for (Offer _offer : proposal.getOffers()) {
@@ -2632,26 +2651,31 @@ public class SharedCoin extends HttpServlet {
                                     if (transaction != null) {
                                         break;
                                     }
-
-                                    Thread.sleep(2000);
                                 } catch (Exception e) {
                                     _e = e;
                                 }
+
+                                Thread.sleep(5000);
                             }
 
-                            for (int ii = 0; ii < 5; ++ii) {
-                                try {
-                                    if (recentlyCompletedTransactions.containsKey(hash)) {
-                                        transaction = MyRemoteWallet.getTransactionByHash(hash);
+                            if (transaction == null) {
+                                for (int ii = 0; ii < 5; ++ii) {
+                                    //If it is a transaction we recently broadcast may be blockchain.info is lagging
+                                    //Wait a bit
+                                    if (recentlyCompletedTransactions.containsKey(hash) || findActiveProposalByTransaction(hash) != null) {
+                                        try {
 
-                                        if (transaction != null) {
-                                            break;
+                                            transaction = MyRemoteWallet.getTransactionByHash(hash);
+
+                                            if (transaction != null) {
+                                                break;
+                                            }
+                                        } catch (Exception e) {
+                                            _e = e;
                                         }
 
                                         Thread.sleep(5000);
                                     }
-                                } catch (Exception e) {
-                                    _e = e;
                                 }
                             }
 
