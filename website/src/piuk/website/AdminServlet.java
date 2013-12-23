@@ -15,7 +15,7 @@ import java.util.List;
 
 @WebServlet({"/sharedcoin-admin"})
 public class AdminServlet extends HttpServlet {
-    public static final String RecentlyCompletedProposalsTempPath = System.getProperty("user.home") + "/Sites/" + "recently_completed_proposals_temp.ser";
+    public static final String RecentlyCompletedTransactionsTempPath = System.getProperty("user.home") + "/Sites/" + "recently_completed_transactions_temp.ser";
     public static final String PKSeedCounterFilePath = System.getProperty("user.home") + "/Sites/PK_SEED_COUNTER";
     public static final String DeletedPrivateKeysLogFilePath = System.getProperty("user.home") + "/Sites/DELETED_KEYS";
     public static final String RecentlyCompletedTransactionsPath = System.getProperty("user.home") + "/Sites/" + "recently_completed_transactions.ser";

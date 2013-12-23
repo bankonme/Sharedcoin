@@ -132,5 +132,11 @@
             </tr>
         </c:forEach>
     </table>
+
+    <p>
+        Total Participants : ${total_participants}<br />
+        Average Participants : ${average_participants}<br />
+        Total Output Value : ${total_output_value} BTC <br />
+    </p>
 </body>
 </html>

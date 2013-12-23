@@ -112,6 +112,8 @@ public class SharedCoin extends HttpServlet {
     private static final ReadWriteLock modifyPendingOffersLock = new ReentrantReadWriteLock();
 
     public static class CompletedTransaction implements Serializable, Comparable<CompletedTransaction> {
+        static final long serialVersionUID = 1L;
+
         long proposalID;
         Transaction transaction;
         boolean isConfirmedBroadcastSuccessfully = false;
@@ -662,7 +664,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static void save() throws IOException {
-        File tempFile = new File(AdminServlet.RecentlyCompletedProposalsTempPath);
+        File tempFile = new File(AdminServlet.RecentlyCompletedTransactionsTempPath);
 
         {
             FileOutputStream fos = new FileOutputStream(tempFile);
@@ -2538,14 +2540,31 @@ public class SharedCoin extends HttpServlet {
         req.setAttribute("pending_offers", pendingOffers.values());
         req.setAttribute("active_proposals", activeProposals.values());
 
+
+
         List<CompletedTransaction> recentlyCompleted = new ArrayList<>(recentlyCompletedTransactions.values());
 
         Collections.sort(recentlyCompleted);
 
+
+        int totalParticipants = 0;
+        long totalOutputValue = 0;
+        for (CompletedTransaction completedTransaction : recentlyCompleted) {
+            totalParticipants += completedTransaction.nParticipants;
+
+            for (TransactionOutput output : completedTransaction.getTransaction().getOutputs()) {
+                 totalOutputValue += output.getValue().longValue();
+            }
+        }
+
+        req.setAttribute("total_participants", totalParticipants);
+        req.setAttribute("average_participants", ((double)totalParticipants / (double)recentlyCompleted.size()));
         req.setAttribute("recently_completed_transactions",recentlyCompleted);
+        req.setAttribute("total_output_value", (totalOutputValue / (double)COIN));
 
         getServletContext().getRequestDispatcher("/WEB-INF/sharedcoin-status.jsp").forward(req, res);
     }
+
     @Override
     public void doOptions(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException {
         resp.setHeader("Access-Control-Allow-Origin", "*");
