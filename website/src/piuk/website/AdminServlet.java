@@ -1,6 +1,7 @@
 package piuk.website;
 
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.StringEscapeUtils;
 import piuk.MyRemoteWallet;
 import piuk.MyTransactionOutPoint;
 
@@ -38,6 +39,21 @@ public class AdminServlet extends HttpServlet {
         fWriter.close();
     }
 
+    public static boolean constantEquals(String a, String b) {
+        boolean equal = true;
+        if (a.length() != b.length()) {
+            equal = false;
+        }
+
+        for ( int i = 0; i < AuthCode.length(); i++ ) {
+            if (Character.toLowerCase(a.charAt(i%a.length())) != Character.toLowerCase(b.charAt(i%b.length())) ) {
+                equal = false;
+            }
+        }
+
+        return equal;
+    }
+
     public static int readPKSeedCounter() throws IOException {
         if (new File(PKSeedCounterFilePath).exists()) {
             FileReader reader = new FileReader(PKSeedCounterFilePath);
@@ -61,7 +77,7 @@ public class AdminServlet extends HttpServlet {
     }
 
     public static String getRealIP(HttpServletRequest req) {
-        if (req.getHeader("cf-connecting-ip") != null)
+        if (req.getHeader("cf-connecting-ip") != null && Settings.instance().getBoolean("cloudflare_enabled"))
             return req.getHeader("cf-connecting-ip");
         else
             return req.getRemoteAddr();
@@ -73,7 +89,7 @@ public class AdminServlet extends HttpServlet {
         String code = req.getParameter("code");
         if (session.getAttribute("authorized") != null && session.getAttribute("authorized").equals("true")) {
             return true;
-        } else if (code != null && code.equals(AuthCode)) {
+        } else if (code != null && constantEquals(code, AuthCode)) {
             session.setAttribute("authorized", "true");
             return true;
         } else {
@@ -96,7 +112,9 @@ public class AdminServlet extends HttpServlet {
 
                 String log = IOUtils.toString(file, "UTF-8");
 
-                res.getWriter().print(log);
+                res.setContentType("text/plain");
+
+                res.getWriter().print(StringEscapeUtils.escapeHtml(log));
 
             } else if (method.equals("clear")) {
                 FileOutputStream erasor = new FileOutputStream(System.getProperty("catalina.base") + "/logs/catalina.out");
@@ -105,7 +123,6 @@ public class AdminServlet extends HttpServlet {
 
                 res.sendRedirect("/sharedcoin-admin");
             } else if (method.equals("threads")) {
-
                 res.setContentType("text/plain");
 
                 res.getWriter().print("Threads \n\n");
@@ -178,14 +195,12 @@ public class AdminServlet extends HttpServlet {
             String method = req.getParameter("method");
             if (method != null) {
                 if (method.equals("git_pull_and_restart")) {
-
                     runBASH("cd ~/Sites/api.sharedcoin.com && git stash save --keep-index");
 
                     System.out.println(runBASH("cd ~/Sites/api.sharedcoin.com && git pull"));
 
                     System.out.println(runBASH("cd ~/Sites/api.sharedcoin.com && ant stop-tomcat && ant start-tomcat"));
                 } else if (method.equals("tidy_wallet")) {
-
                     SharedCoin.ourWallet.tidyTheWallet();
 
                     res.sendRedirect("/sharedcoin-admin");

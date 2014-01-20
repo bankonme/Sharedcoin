@@ -1,28 +1,31 @@
 package piuk;
 
-import java.math.BigInteger;
+import com.google.bitcoin.core.*;
 
-import com.google.bitcoin.core.Address;
-import com.google.bitcoin.core.AddressFormatException;
-import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.core.Transaction;
-import com.google.bitcoin.core.TransactionOutput;
+import java.math.BigInteger;
 
 public class MyTransactionOutput extends TransactionOutput {
 	private static final long serialVersionUID = 1L;
 
 	String address;
 	NetworkParameters params;
+    byte[] scriptBytes;
+    boolean isSpent = false;
 
-	MyTransactionOutput(NetworkParameters params, Transaction parent,
-			BigInteger value, Address to) {
+    MyTransactionOutput(NetworkParameters params, Transaction parent,
+			BigInteger value, Address to, byte[] scriptBytes) {
 		super(params, parent, value, to);
 
 		this.params = params;
 		this.address = to.toString();
+        this.scriptBytes = scriptBytes;
 	}
 
-	public Address getToAddress() {
+    public boolean isSpent() {
+        return isSpent;
+    }
+
+    public Address getToAddress() {
 		try {
 			return new Address(params, address);
 		} catch (AddressFormatException e) {
@@ -31,4 +34,16 @@ public class MyTransactionOutput extends TransactionOutput {
 
 		return null;
 	}
+
+    @Override
+    public com.google.bitcoin.core.Script getScriptPubKey() throws com.google.bitcoin.core.ScriptException {
+        return new Script(NetworkParameters.prodNet(), scriptBytes, 0, scriptBytes.length);
+    }
+
+    @Override
+    public byte[] getScriptBytes() {
+       return scriptBytes;
+    }
+
+
 }

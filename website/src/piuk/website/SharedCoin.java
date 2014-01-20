@@ -22,6 +22,7 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -41,13 +42,13 @@ public class SharedCoin extends HttpServlet {
     private static final int TargetNumberActiveAddresses = 800;
     private static final int MaxActiveAddresses = 1000; //16KB
 
-    private static final int TidyWalletInterval = 60000; //1 minutes
+    private static final int TidyWalletInterval = 120000; //2 minutes
     private static long lastTidyTransactionTime = 0;
     private static long lastPushedTransactionTime = 0;
-
     private static final long MinimumOutputValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputValueExcludeFee = (long) (COIN * 0.0000543);
+    private static final long MinimumFeeToDiscard = (long) (COIN * 0.0000543);
 
     private static final long MaximumHardTransactionSize = 100; //100KB
     private static final long MaximumSoftTransactionSize = 16; //16KB
@@ -96,8 +97,10 @@ public class SharedCoin extends HttpServlet {
     private static final long OfferForceProposalAgeMax = 40000; //When an offer reaches this age force a proposal creation
     private static final long OfferForceProposalAgeMin = 10000; //When an offer reaches this age force a proposal creation
 
+    private static final long TokenExpiryTime = 1800000; //Expiry time of tokens. 30 minutes
+
     public static final int scriptSigSize = 138; //107 compressed
-    public static final BigInteger TransactionFeePerKB = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
+    public static final BigInteger TransactionFeePer1000Bytes = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
     public static final BigInteger MinStandardOutputSize = BigInteger.valueOf((long) (COIN * 0.01)); //0.01 BTC
 
     private static boolean _scheduleDivideLargeOutputs = false;
@@ -107,6 +110,9 @@ public class SharedCoin extends HttpServlet {
     public static final OurWallet ourWallet = new OurWallet();
 
     private static final ExecutorService exec = Executors.newSingleThreadExecutor();
+
+    private static final ExecutorService tidyExec = Executors.newSingleThreadExecutor();
+
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
 
     private static final ReadWriteLock modifyPendingOffersLock = new ReentrantReadWriteLock();
@@ -198,12 +204,14 @@ public class SharedCoin extends HttpServlet {
     public static class Token {
         public double fee_percent;
         public long created;
+        public String created_ip;
 
         public String encrypt() throws Exception {
             JSONObject obj = new JSONObject();
 
             obj.put("fee_percent", fee_percent);
             obj.put("created", created);
+            obj.put("created_ip", created_ip);
 
             return MyWallet.encrypt(obj.toJSONString(), AdminServlet.TokenEncryptionPassword, MyWallet.DefaultPBKDF2Iterations);
         }
@@ -217,8 +225,19 @@ public class SharedCoin extends HttpServlet {
 
             Token token = new Token();
 
-            token.fee_percent = Double.valueOf(obj.get("fee_percent").toString());
-            token.created = Long.valueOf(obj.get("created").toString());
+            try {
+                token.fee_percent = Double.valueOf(obj.get("fee_percent").toString());
+            } catch (Exception e) {
+                throw new Exception("Invalid Integer");
+            }
+
+            try {
+                token.created = Long.valueOf(obj.get("created").toString());
+            } catch (Exception e) {
+                throw new Exception("Invalid Integer");
+            }
+
+            token.created_ip = obj.get("created_ip").toString();
 
             return token;
         }
@@ -526,7 +545,7 @@ public class SharedCoin extends HttpServlet {
                         }
 
 
-                        wallet.send(new String[]{address}, destination, BigInteger.valueOf(split), TransactionFeePerKB);
+                        wallet.send(new String[]{address}, destination, BigInteger.valueOf(split), TransactionFeePer1000Bytes);
 
                         break;
                     }
@@ -825,26 +844,31 @@ public class SharedCoin extends HttpServlet {
         }, 500, 500);
 
 
-
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-                exec.execute(new Runnable() {
+
+                final AtomicBoolean tidyIsRunning = new AtomicBoolean();
+
+                tidyExec.execute(new Runnable() {
                     @Override
                     public void run() {
-                        try {
+                        if (tidyIsRunning.compareAndSet(false, true)) {
+                            try {
+                                if (_scheduleDivideLargeOutputs) {
+                                    _scheduleDivideLargeOutputs = false;
+                                    ourWallet.divideLargeOutputs();
+                                }
 
-                            if (_scheduleDivideLargeOutputs) {
-                                _scheduleDivideLargeOutputs = false;
-                                ourWallet.divideLargeOutputs();
+                                if (lastTidyTransactionTime != lastPushedTransactionTime) {
+                                    lastTidyTransactionTime = lastPushedTransactionTime;
+                                    ourWallet.tidyTheWallet();
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            } finally {
+                                tidyIsRunning.set(false);
                             }
-
-                            if (lastTidyTransactionTime != lastPushedTransactionTime) {
-                                lastTidyTransactionTime = lastPushedTransactionTime;
-                                ourWallet.tidyTheWallet();
-                            }
-                        } catch (Exception e) {
-                            e.printStackTrace();
                         }
                     }
                 });
@@ -863,7 +887,7 @@ public class SharedCoin extends HttpServlet {
             if (completedTime > 0)
                 age = now - completedTime;
 
-            if (age < 10000) {
+            if (age < 60000) {
                 continue;
             }
 
@@ -873,7 +897,7 @@ public class SharedCoin extends HttpServlet {
                 boolean didAlreadyFail = !completedTransaction.isConfirmedBroadcastSuccessfully;
 
                 try {
-                    Transaction transaction = MyRemoteWallet.getTransactionByHash(new Hash(completedTransaction.transaction.getHash().getBytes()));
+                    Transaction transaction = MyRemoteWallet.getTransactionByHash(new Hash(completedTransaction.transaction.getHash().getBytes()), false);
 
                     if (transaction == null) {
                         throw new Exception("Null Transaction");
@@ -1101,17 +1125,17 @@ public class SharedCoin extends HttpServlet {
         public synchronized boolean sanityCheckBeforePush() throws Exception {
             long transactionFee = getTransactionFee();
 
-            int nKB = (int)Math.ceil(transaction.bitcoinSerialize().length / 1024d);
+            int nKB = (int)Math.ceil(transaction.bitcoinSerialize().length / 1000d);
 
             boolean feeMatches = false;
             for (int ii = -4; ii < 4; ++ii) { //Allow -4 + 4 KB each side
-                if (transactionFee != (nKB+ii)*TransactionFeePerKB.longValue()) {
+                if (transactionFee != (nKB+ii)*TransactionFeePer1000Bytes.longValue()) {
                     feeMatches = true;
                 }
             }
 
             if (!feeMatches) {
-                throw new Exception("Sanity Check Failed. Unexpected Network Fee " + transactionFee + " != " +nKB + " * " + TransactionFeePerKB);
+                throw new Exception("Sanity Check Failed. Unexpected Network Fee " + transactionFee + " != " +nKB + " * " + TransactionFeePer1000Bytes);
             }
 
             if (nKB > MaximumHardTransactionSize) {
@@ -1842,15 +1866,14 @@ public class SharedCoin extends HttpServlet {
 
             BigInteger feedPaid = BigInteger.ZERO;
 
-            int nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1024d);
+            int nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
 
             //Check fee
-            BigInteger extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePerKB).subtract(feedPaid);
+            BigInteger extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
             if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                 change = change.subtract(extraFeeNeeded);
                 feedPaid = feedPaid.add(extraFeeNeeded);
             }
-
 
             final List<Offer> allOffers = new ArrayList<>(this.offers);
 
@@ -1869,11 +1892,14 @@ public class SharedCoin extends HttpServlet {
                     if (transaction.getOutputs().size() > MaxNumberOfOutputsIncludingChange || transaction.getInputs().size() > MaxNumberOfInputs) {
                         break;
                     }
+
                     if (nKB >= MaximumSoftTransactionSize) {
                         break;
                     }
 
                     long firstOfferTotalOutputValue = firstOffer.getValueOutputRequested();
+
+                    boolean _break = false;
 
                     for (int ii = 0; ii < allOffers.size(); ++ii) {
                         final Offer secondOffer = allOffers.get((ii+cOfferOffset) % allOffers.size());
@@ -1908,8 +1934,8 @@ public class SharedCoin extends HttpServlet {
                             change = change.subtract(differenceBN);
 
                             //Check fee
-                            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1024d);
-                            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePerKB).subtract(feedPaid);
+                            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
+                            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
                             if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                                 change = change.subtract(extraFeeNeeded);
@@ -1918,8 +1944,14 @@ public class SharedCoin extends HttpServlet {
 
                             allFailed = false;
 
+                            _break = true;
+
                             break;
                         }
+                    }
+
+                    if (_break) {
+                        break;
                     }
 
                     ++cOfferOffset;
@@ -1943,6 +1975,7 @@ public class SharedCoin extends HttpServlet {
                         break;
                     }
 
+                    boolean _break = false;
                     for (Output output : offer.requestedOutputs) {
                         if (!output.isExcludeFromFee() && output.value <= change.longValue()-MinStandardOutputSize.longValue()) {
                             double rand = (Math.random()-0.5)*2; //-1 to 1
@@ -1957,8 +1990,8 @@ public class SharedCoin extends HttpServlet {
                                 change = change.subtract(rounded);
 
                                 //Check fee
-                                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1024d);
-                                extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePerKB).subtract(feedPaid);
+                                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
+                                extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
                                 if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                                     change = change.subtract(extraFeeNeeded);
@@ -1967,9 +2000,15 @@ public class SharedCoin extends HttpServlet {
 
                                 allFailed = false;
 
+                                _break = true;
+
                                 break;
                             }
                         }
+                    }
+
+                    if (_break) {
+                        break;
                     }
                 }
 
@@ -1980,8 +2019,8 @@ public class SharedCoin extends HttpServlet {
 
 
             //Check fee
-            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1024d);
-            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePerKB).subtract(feedPaid);
+            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
+            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
             if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                 change = change.subtract(extraFeeNeeded);
@@ -2553,7 +2592,7 @@ public class SharedCoin extends HttpServlet {
             totalParticipants += completedTransaction.nParticipants;
 
             for (TransactionOutput output : completedTransaction.getTransaction().getOutputs()) {
-                 totalOutputValue += output.getValue().longValue();
+                totalOutputValue += output.getValue().longValue();
             }
         }
 
@@ -2584,7 +2623,7 @@ public class SharedCoin extends HttpServlet {
         try {
             setCORSAllowAll(res);
 
-            if (enabled == false && req.getParameter("overrided_disabled") == null && !AdminServlet.isAuthorized(req)) {
+            if (enabled == false && !AdminServlet.isAuthorized(req)) {
                 throw new Exception("Shared Coin is currently disabled");
             }
 
@@ -2605,6 +2644,7 @@ public class SharedCoin extends HttpServlet {
             if (method != null) {
                 if (method.equals("submit_offer")) {
                     Offer existingConflictingOffer = null;
+                    MyTransactionOutput outputAlreadySpent = null;
 
                     Offer offer = new Offer();
 
@@ -2639,13 +2679,40 @@ public class SharedCoin extends HttpServlet {
 
                         Token token = Token.decrypt(tokenString);
 
+                        if (token.created < System.currentTimeMillis()-TokenExpiryTime) {
+                            throw new Exception("Token has expired");
+                        }
+
+                        if (!token.created_ip.equals(AdminServlet.getRealIP(req))) {
+                            throw new Exception("Token Requester Changed");
+                        }
+
                         offer.token = token;
                         offer.feePercent = token.fee_percent;
                     } else {
                         offer.feePercent = feePercentForRequest(req);
                     }
 
-                    offer.forceProposalMaxAge = randomLong(OfferForceProposalAgeMin, OfferForceProposalAgeMax);
+                    String userMaxAgeString = req.getParameter("offer_max_age");
+                    if (userMaxAgeString != null) {
+                        try {
+                            long userMaxAge = Long.valueOf(userMaxAgeString);
+
+                            if (userMaxAge < 10000) {
+                                throw new Exception("Max Age Must Be Greater 10s");
+                            }
+
+                            if (userMaxAge > 3600000) {
+                                throw new Exception("Max Age Must Be Less Than 1 Hour");
+                            }
+
+                            offer.forceProposalMaxAge = userMaxAge;
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Numerical Value");
+                        }
+                    } else {
+                        offer.forceProposalMaxAge = randomLong(OfferForceProposalAgeMin, OfferForceProposalAgeMax);
+                    }
 
                     Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
                     for (Object _input : inputs) {
@@ -2665,7 +2732,7 @@ public class SharedCoin extends HttpServlet {
 
                             for (int ii = 0; ii < 2; ++ii) {
                                 try {
-                                    transaction = MyRemoteWallet.getTransactionByHash(hash);
+                                    transaction = MyRemoteWallet.getTransactionByHash(hash, true);
 
                                     if (transaction != null) {
                                         break;
@@ -2683,8 +2750,7 @@ public class SharedCoin extends HttpServlet {
                                     //Wait a bit
                                     if (recentlyCompletedTransactions.containsKey(hash) || findActiveProposalByTransaction(hash) != null) {
                                         try {
-
-                                            transaction = MyRemoteWallet.getTransactionByHash(hash);
+                                            transaction = MyRemoteWallet.getTransactionByHash(hash, true);
 
                                             if (transaction != null) {
                                                 break;
@@ -2693,7 +2759,7 @@ public class SharedCoin extends HttpServlet {
                                             _e = e;
                                         }
 
-                                        Thread.sleep(5000);
+                                        Thread.sleep(10000);
                                     }
                                 }
                             }
@@ -2736,7 +2802,13 @@ public class SharedCoin extends HttpServlet {
                             throw new Exception("The Maximum Input Value is " + (MaximumInputValue / (double)COIN) + " BTC");
                         }
 
-                        outpointWithValue.script = MyRemoteWallet.getScriptForOutpoint(transaction.getTxIndex(), index);
+                        MyTransactionOutput output = (MyTransactionOutput) transaction.getOutputs().get(index);
+
+                        if (output.isSpent()) {
+                            outputAlreadySpent = output;
+                        }
+
+                        outpointWithValue.script = output.getScriptBytes();
 
                         if (outpointWithValue.script == null) {
                             throw new Exception("Output Script is null");
@@ -2826,16 +2898,13 @@ public class SharedCoin extends HttpServlet {
                     //Check for any conflicting inputs
                     //Then add to pending
 
+                    JSONObject obj = new JSONObject();
+
                     Lock lock = modifyPendingOffersLock.writeLock();
 
                     lock.lock();
                     try {
                         for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-
-                            if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
-                                throw new Exception("Outpoint already Spent " + outpointWithValue);
-                            }
-
                             Offer tmpExistingConflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
 
                             if (existingConflictingOffer != null && existingConflictingOffer != tmpExistingConflictingOffer) {
@@ -2848,57 +2917,32 @@ public class SharedCoin extends HttpServlet {
                         if (existingConflictingOffer != null) {
                             Logger.log(Logger.SeverityWARN, "Offer " + offer + " has conflicting offer " + existingConflictingOffer);
 
-                            if (!offer.isTheSameAsOffer(existingConflictingOffer)) {
-                                Logger.log(Logger.SeverityWARN, "Conflicting Offer Not Equal");
-
-                                //Can only replace with the same token
-                                if (pendingOffers.containsKey(existingConflictingOffer.getOfferID())) {
-                                    //Replace the conflicting offer
-
-                                    Logger.log(Logger.SeverityWARN, "Removing Conflicting Offer");
-
-                                    if (!pendingOffers.keySet().remove(existingConflictingOffer.getOfferID()))
-                                        throw new Exception("Error Removing Conflicting Pending Offer");
-
-                                    existingConflictingOffer = null;
-                                } else {
-                                    Proposal conflictingProposal = findActiveProposalFromOffer(existingConflictingOffer);
-
-                                    if (conflictingProposal == null || conflictingProposal.isFinalized || conflictingProposal.input_scripts.size() > 0) {
-                                        throw new Exception("Conflicting proposal not active or already finalized");
-                                    }
-
-                                    if (existingConflictingOffer.token != null && offer.token != null && existingConflictingOffer.token.equals(offer.token)) {
-                                        throw new Exception("Outpoint already in use. Conflicting offer not pending and Offer token not equal");
-                                    }
-
-                                    if (conflictingProposal.getOffers().size() != 1) {
-                                        throw new Exception("Conflicting Active Proposal Has More Than One Participant");
-                                    }
-
-                                    Logger.log(Logger.SeverityWARN, "Removing Conflicting Proposal");
-
-                                    if (!activeProposals.keySet().remove(conflictingProposal.getProposalID()))
-                                        throw new Exception("Error Removing Conflicting Active Proposal");
-
-                                    existingConflictingOffer = null;
-                                }
-                            } else {
+                            if (offer.isTheSameAsOffer(existingConflictingOffer)) {
                                 Logger.log(Logger.SeverityWARN, "Conflicting Offer Is Equal");
+
+                                obj.put("offer_id", existingConflictingOffer.getOfferID());
+                            } else {
+                                throw new Exception("Conflicting Offer");
                             }
                         } else {
+                            //Check we didn't recently spend any outputs
+                            for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                                if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
+                                    throw new Exception("Outpoint already Spent By Us " + outpointWithValue);
+                                }
+                            }
+
+                            //If Blockchain.info reports an output is spent it is only fatal when a new offer is being submitted
+                            if (outputAlreadySpent != null) {
+                                throw new Exception("Outpoint already spent " + outputAlreadySpent);
+                            }
+
                             addOfferToPending(offer);
+
+                            obj.put("offer_id", offer.getOfferID());
                         }
                     } finally {
                         lock.unlock();
-                    }
-
-                    JSONObject obj = new JSONObject();
-
-                    if (existingConflictingOffer != null) {
-                        obj.put("offer_id", existingConflictingOffer.getOfferID());
-                    } else {
-                        obj.put("offer_id", offer.getOfferID());
                     }
 
                     res.setContentType("application/json");
@@ -2948,6 +2992,7 @@ public class SharedCoin extends HttpServlet {
 
                     token.fee_percent = feePercentForRequest(req);
                     token.created = System.currentTimeMillis();
+                    token.created_ip = AdminServlet.getRealIP(req);
 
                     obj.put("fee_percent", token.fee_percent);
                     obj.put("token", token.encrypt());
@@ -3158,8 +3203,20 @@ public class SharedCoin extends HttpServlet {
                             for (Object _jsonSignatureObject : jsonSignaturesArray) {
                                 JSONObject jsonSignatureObject = (JSONObject)_jsonSignatureObject;
 
-                                int tx_input_index = Integer.valueOf(jsonSignatureObject.get("tx_input_index").toString());
-                                int offer_outpoint_index = Integer.valueOf(jsonSignatureObject.get("offer_outpoint_index").toString());
+                                int tx_input_index;
+                                try {
+                                    tx_input_index = Integer.valueOf(jsonSignatureObject.get("tx_input_index").toString());
+                                } catch (Exception e) {
+                                    throw new Exception("Invalid Integer");
+                                }
+
+                                int offer_outpoint_index;
+                                try {
+                                    offer_outpoint_index = Integer.valueOf(jsonSignatureObject.get("offer_outpoint_index").toString());
+                                } catch (Exception e) {
+                                    throw new Exception("Invalid Integer");
+                                }
+
                                 byte[] inputScriptBytes = Hex.decode((String)jsonSignatureObject.get("input_script"));
 
                                 Script bitcoinJInputScript = newScript(inputScriptBytes);

@@ -17,20 +17,14 @@
 
 package piuk;
 
+import com.google.bitcoin.core.*;
+import org.spongycastle.util.encoders.Hex;
+
 import java.io.Serializable;
 import java.math.BigInteger;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-
-import org.spongycastle.util.encoders.Hex;
-import com.google.bitcoin.core.Address;
-import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.core.Sha256Hash;
-import com.google.bitcoin.core.Transaction;
-import com.google.bitcoin.core.TransactionConfidence;
-import com.google.bitcoin.core.TransactionOutPoint;
-import com.google.bitcoin.core.Wallet;
 
 public class MyTransaction extends Transaction implements Serializable {
 	private static final long serialVersionUID = 1L;
@@ -190,7 +184,14 @@ public class MyTransaction extends Transaction implements Serializable {
 
 			TransactionOutPoint outpoint = new TransactionOutPoint(NetworkParameters.prodNet(), txOutputN, (Transaction) null);
 
-			MyTransactionInput input = new MyTransactionInput(NetworkParameters.prodNet(), null, null, outpoint);
+
+            byte[] scriptBytes = null;
+            String scriptHex = (String)inputDict.get("script");
+            if (scriptHex != null) {
+                scriptBytes = Hex.decode(scriptHex);
+            }
+
+			MyTransactionInput input = new MyTransactionInput(NetworkParameters.prodNet(), null, scriptBytes, outpoint);
 
 			if ((String) prev_out_dict.get("addr") != null)
 				input.address = new Address(NetworkParameters.prodNet(),
@@ -216,7 +217,17 @@ public class MyTransaction extends Transaction implements Serializable {
 			Address addr = new Address(NetworkParameters.prodNet(),
 					(String) outDict.get("addr"));
 
-			MyTransactionOutput output = new MyTransactionOutput(NetworkParameters.prodNet(), null, value, addr);
+            byte[] scriptBytes = null;
+            String scriptHex = (String)outDict.get("script");
+            if (scriptHex != null) {
+                scriptBytes = Hex.decode(scriptHex);
+            }
+
+            boolean spent = outDict.get("spent") != null && outDict.get("spent").equals("true");
+
+			MyTransactionOutput output = new MyTransactionOutput(NetworkParameters.prodNet(), null, value, addr, scriptBytes);
+
+            output.isSpent = spent;
 
 			tx.addOutput(output);
 		}

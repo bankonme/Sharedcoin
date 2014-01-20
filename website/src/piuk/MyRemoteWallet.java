@@ -623,8 +623,8 @@ public class MyRemoteWallet extends MyWallet {
         return Hex.decode(response);
     }
 
-    public static MyTransaction getTransactionByHash(Hash hash) throws Exception {
-        StringBuffer buffer =  new StringBuffer(WebROOT + "tx/"+hash+"?format=json&show_adv=true");
+    public static MyTransaction getTransactionByHash(Hash hash, boolean scripts) throws Exception {
+        StringBuffer buffer =  new StringBuffer(WebROOT + "tx/"+hash+"?format=json&show_adv=true&scripts="+scripts);
 
         String response = fetchURL(buffer.toString());
 
