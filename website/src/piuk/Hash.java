@@ -17,12 +17,11 @@
 
 package piuk;
 
+import org.apache.commons.lang3.ArrayUtils;
+import org.spongycastle.util.encoders.Hex;
+
 import java.io.Serializable;
 import java.util.Arrays;
-
-import org.apache.commons.lang.ArrayUtils;
-
-import org.spongycastle.util.encoders.Hex;
 
 public class Hash implements Serializable {
 	private static final long serialVersionUID = 1L;

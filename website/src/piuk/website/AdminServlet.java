@@ -1,7 +1,7 @@
 package piuk.website;
 
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
 import piuk.MyRemoteWallet;
 import piuk.MyTransactionOutPoint;
 
@@ -114,7 +114,7 @@ public class AdminServlet extends HttpServlet {
 
                 res.setContentType("text/plain");
 
-                res.getWriter().print(StringEscapeUtils.escapeHtml(log));
+                res.getWriter().print(StringEscapeUtils.escapeHtml4(log));
 
             } else if (method.equals("clear")) {
                 FileOutputStream erasor = new FileOutputStream(System.getProperty("catalina.base") + "/logs/catalina.out");

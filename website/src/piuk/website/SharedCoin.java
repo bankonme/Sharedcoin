@@ -2,8 +2,6 @@ package piuk.website;
 
 import com.google.bitcoin.core.*;
 import org.apache.commons.lang3.ArrayUtils;
-import org.apache.mina.util.ConcurrentHashSet;
-import org.jboss.netty.util.internal.ConcurrentHashMap;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -19,6 +17,7 @@ import java.io.*;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -1102,7 +1101,7 @@ public class SharedCoin extends HttpServlet {
         private List<Offer> offers = new CopyOnWriteArrayList<>();
         private List<Offer> ourOffers = new CopyOnWriteArrayList<>();
         private transient Map<Integer, Script> input_scripts = new ConcurrentHashMap<>();
-        private transient Set<OutpointWithValue> outpointsSpentSoFar = new ConcurrentHashSet<>();
+        private transient Set<OutpointWithValue> outpointsSpentSoFar = Collections.newSetFromMap(new ConcurrentHashMap<OutpointWithValue, Boolean>());
 
         private final long proposalID;
         private long createdTime = System.currentTimeMillis();
@@ -1183,7 +1182,7 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
+                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), proposalID)) {
                         throw new Exception("Sanity Check Failed. User Offer Outpoint already Spent " + outpointWithValue);
                     }
                 }
@@ -1191,7 +1190,7 @@ public class SharedCoin extends HttpServlet {
 
             for (Offer offer : ourOffers) {
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
+                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), proposalID)) {
                         throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent " + outpointWithValue);
                     }
                 }
@@ -1501,7 +1500,7 @@ public class SharedCoin extends HttpServlet {
 
                     alreadyTested.add(outpoint);
 
-                    if (selectedBeans.contains(outpoint) || wasOutpointRecentlySpentByUs(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
+                    if (selectedBeans.contains(outpoint) || wasOutpointRecentlySpentByUs(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN(), proposalID) || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
                         continue;
                     }
 
@@ -1726,6 +1725,7 @@ public class SharedCoin extends HttpServlet {
         public synchronized void mixWithOurWallet() throws Exception {
 
             List<MyTransactionOutPoint> allUnspent = ourWallet.getUnspentOutputs(1000);
+
             Map<Offer, List<MyTransactionOutPoint>> unspentFromOurTransaction = new HashMap<>();
 
             int allFailedCount = 0;
@@ -2196,7 +2196,29 @@ public class SharedCoin extends HttpServlet {
     }
 
 
-    public static boolean wasOutpointRecentlySpentByUs(Hash hash, int index) {
+    public static boolean wasOutpointRecentlySpentByUs(Hash hash, int index, long proposalID) {
+
+        for (Proposal proposal : activeProposals.values()) {
+
+            //Ignore a single proposal
+            if (proposal.getProposalID() == proposalID)
+                continue;
+
+            for (Offer offer : proposal.offers) {
+               for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                   if (new Hash(outpointWithValue.getHash().getBytes()).equals(hash) && outpointWithValue.getIndex() == index)
+                       return true;
+               }
+            }
+
+            for (Offer offer : proposal.ourOffers) {
+                for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                    if (new Hash(outpointWithValue.getHash().getBytes()).equals(hash) && outpointWithValue.getIndex() == index)
+                        return true;
+                }
+            }
+        }
+
         for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
             List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
 
@@ -2927,7 +2949,7 @@ public class SharedCoin extends HttpServlet {
                         } else {
                             //Check we didn't recently spend any outputs
                             for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                                if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
+                                if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), 0)) {
                                     throw new Exception("Outpoint already Spent By Us " + outpointWithValue);
                                 }
                             }

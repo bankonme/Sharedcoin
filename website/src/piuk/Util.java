@@ -1,6 +1,5 @@
 package piuk;
 
-import com.google.api.client.repackaged.org.apache.commons.codec.binary.Base64;
 import org.apache.commons.io.IOUtils;
 import org.spongycastle.util.encoders.Hex;
 
@@ -67,11 +66,6 @@ public final class Util {
         return new String(chars);
     }
 
-
-
-    public static boolean isBase64(String str) {
-        return Base64.isBase64(str);
-    }
 
     public static String getLongestWord(String str) {
         String[] words = str.split("\\W+");

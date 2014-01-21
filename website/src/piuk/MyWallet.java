@@ -17,25 +17,16 @@
 
 package piuk;
 
-import org.spongycastle.util.encoders.Base64;
-import org.spongycastle.util.encoders.Hex;
 import com.google.bitcoin.core.Base58;
 import com.google.bitcoin.core.ECKey;
 import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.core.Utils;
 import com.google.bitcoin.core.Wallet;
-import org.apache.commons.lang.ArrayUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
-
-import java.math.BigInteger;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.*;
-
 import org.spongycastle.crypto.BufferedBlockCipher;
 import org.spongycastle.crypto.CipherParameters;
 import org.spongycastle.crypto.PBEParametersGenerator;
@@ -47,6 +38,13 @@ import org.spongycastle.crypto.paddings.ISO10126d2Padding;
 import org.spongycastle.crypto.paddings.PaddedBufferedBlockCipher;
 import org.spongycastle.crypto.params.KeyParameter;
 import org.spongycastle.crypto.params.ParametersWithIV;
+import org.spongycastle.util.encoders.Base64;
+import org.spongycastle.util.encoders.Hex;
+
+import java.math.BigInteger;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.*;
 
 public class MyWallet {
     private static final int AESBlockSize = 4;
