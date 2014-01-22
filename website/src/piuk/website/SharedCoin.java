@@ -1182,16 +1182,29 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), proposalID)) {
-                        throw new Exception("Sanity Check Failed. User Offer Outpoint already Spent " + outpointWithValue);
+                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    if (completedTransaction != null) {
+                        throw new Exception("Sanity Check Failed. User Offer Outpoint already Spent in Completed Transaction " + outpointWithValue);
+                    }
+
+                    Offer conflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    if (conflictingOffer != null && !conflictingOffer.equals(offer)) {
+                        throw new Exception("Sanity Check Failed. User Offer Outpoint already Spent in Conflicting Offer " + conflictingOffer);
                     }
                 }
             }
 
             for (Offer offer : ourOffers) {
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), proposalID)) {
-                        throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent " + outpointWithValue);
+
+                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    if (completedTransaction != null) {
+                        throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent in Completed Transaction " + outpointWithValue);
+                    }
+
+                    Offer conflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    if (conflictingOffer != null && !conflictingOffer.equals(offer)) {
+                        throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent in Conflicting Offer " + conflictingOffer);
                     }
                 }
             }
@@ -1500,7 +1513,7 @@ public class SharedCoin extends HttpServlet {
 
                     alreadyTested.add(outpoint);
 
-                    if (selectedBeans.contains(outpoint) || wasOutpointRecentlySpentByUs(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN(), proposalID) || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
+                    if (selectedBeans.contains(outpoint) || findCompletedTransactionOutpointWasUsedIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) != null || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
                         continue;
                     }
 
@@ -2195,29 +2208,7 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
-
-    public static boolean wasOutpointRecentlySpentByUs(Hash hash, int index, long proposalID) {
-
-        for (Proposal proposal : activeProposals.values()) {
-
-            //Ignore a single proposal
-            if (proposal.getProposalID() == proposalID)
-                continue;
-
-            for (Offer offer : proposal.offers) {
-               for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                   if (new Hash(outpointWithValue.getHash().getBytes()).equals(hash) && outpointWithValue.getIndex() == index)
-                       return true;
-               }
-            }
-
-            for (Offer offer : proposal.ourOffers) {
-                for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    if (new Hash(outpointWithValue.getHash().getBytes()).equals(hash) && outpointWithValue.getIndex() == index)
-                        return true;
-                }
-            }
-        }
+    public static CompletedTransaction findCompletedTransactionOutpointWasUsedIn(Hash hash, int index) {
 
         for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
             List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
@@ -2226,11 +2217,11 @@ public class SharedCoin extends HttpServlet {
                 TransactionOutPoint outPoint = input.getOutpoint();
 
                 if (new Hash(outPoint.getHash().getBytes()).equals(hash) && outPoint.getIndex() == index)
-                    return true;
+                    return completedTransaction;
             }
         }
 
-        return false;
+        return null;
     }
 
     public static Offer findOfferConsumingOutpoint(Hash hash, int index) {
@@ -2949,8 +2940,29 @@ public class SharedCoin extends HttpServlet {
                         } else {
                             //Check we didn't recently spend any outputs
                             for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                                if (wasOutpointRecentlySpentByUs(outpointWithValue.getHash(), outpointWithValue.getIndex(), 0)) {
-                                    throw new Exception("Outpoint already Spent By Us " + outpointWithValue);
+
+                                {
+                                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                                    if (completedTransaction != null) {
+                                        Logger.log(Logger.SeverityWARN, "User tried to submit outpoint spent in completed transaction " + AdminServlet.getRealIP(req));
+                                        Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
+                                        Logger.log(Logger.SeverityWARN, "   This is the conflicting transaction " + completedTransaction);
+                                        Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + completedTransaction.completedTime);
+
+                                        throw new Exception("Outpoint (" + outpointWithValue + ") already Spent in Completed Transaction " + completedTransaction);
+                                    }
+                                }
+
+                                {
+                                    Offer conflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                                    if (conflictingOffer != null && !conflictingOffer.equals(offer)) {
+                                        Logger.log(Logger.SeverityWARN, "User tried to submit outpoint conflicting with an existing offer " + AdminServlet.getRealIP(req));
+                                        Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
+                                        Logger.log(Logger.SeverityWARN, "   This is the conflicting offer " + conflictingOffer);
+                                        Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + conflictingOffer.getReceivedTime());
+
+                                        throw new Exception("Outpoint (" + outpointWithValue + ") already Spent In Offer " + conflictingOffer);
+                                    }
                                 }
                             }
 
