@@ -2740,6 +2740,8 @@ public class SharedCoin extends HttpServlet {
         } else if (allowedDomains.contains(origin)) {
             res.setHeader("Access-Control-Allow-Origin", origin);
         } else {
+            Logger.log(Logger.SeverityWARN, "Unknown CORS Origin " + origin);
+
             throw new IOException("CORS Denied");
         }
     }
@@ -3275,13 +3277,20 @@ public class SharedCoin extends HttpServlet {
                         if (proposal == null) {
                             CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
                             if (completedTransaction != null) {
-                                obj.put("status", "complete");
-                                obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                                byte[] serialized = stream.toByteArray();
-                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                                if (completedTransaction.pushCount == 0) {
+                                    obj.put("status", "waiting");
+                                    obj.put("signatures_required", 0);
+                                    obj.put("signatures_submitted", completedTransaction.getTransaction().getInputs().size());
+                                } else {
+                                    obj.put("status", "complete");
+                                    obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
+
+                                    ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                                    completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
+                                    byte[] serialized = stream.toByteArray();
+                                    obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                                }
                             } else {
                                 obj.put("status", "not_found");
                             }
