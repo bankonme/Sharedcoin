@@ -47,12 +47,11 @@ public class SharedCoin extends HttpServlet {
     private static final long MinimumOutputValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputValueExcludeFee = (long) (COIN * 0.0000543);
-    private static final long MinimumFeeToDiscard = (long) (COIN * 0.0000543);
 
     private static final long MaximumHardTransactionSize = 100; //100KB
     private static final long MaximumSoftTransactionSize = 16; //16KB
 
-    private static final long MaxPollTime = 10000;
+    private static final long MaxPollTime = 5000;
 
     private static final double DefaultFeePercent = 0.0; //Per rep
     private static final long MinimumFee = (long) (COIN * 0.0001); //At this point transaction fees start costing more
@@ -66,7 +65,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumInputValue = COIN * 1000; //1000 BTC
     private static final long MaximumOfferNumberOfInputs = 20;
     private static final long MaximumOfferNumberOfOutputs = 20;
-    private static final long VarianceWhenMimicingOutputValue = 10; //15%
+    private static final long VarianceWhenMimicingOutputValue = 10; //10%
 
     private static final long RecommendedMinIterations = 2;
     private static final long RecommendedMaxIterations = 10;
@@ -96,7 +95,7 @@ public class SharedCoin extends HttpServlet {
     private static final long OfferForceProposalAgeMax = 40000; //When an offer reaches this age force a proposal creation
     private static final long OfferForceProposalAgeMin = 10000; //When an offer reaches this age force a proposal creation
 
-    private static final long TokenExpiryTime = 1800000; //Expiry time of tokens. 30 minutes
+    private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
     public static final int scriptSigSize = 138; //107 compressed
     public static final BigInteger TransactionFeePer1000Bytes = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
@@ -126,6 +125,7 @@ public class SharedCoin extends HttpServlet {
         long completedTime;
         int pushCount = 0;
         int nParticipants;
+        long fee;
 
         @Override
         public int compareTo(CompletedTransaction o) {
@@ -160,6 +160,16 @@ public class SharedCoin extends HttpServlet {
 
         public long getLastCheckedConfirmed() {
             return lastCheckedConfirmed;
+        }
+
+        public long getExpectedFee() {
+            int nKB = (int)Math.ceil(transaction.bitcoinSerialize().length / 1000d);
+
+            return nKB * TransactionFeePer1000Bytes.longValue();
+        }
+
+        public long getFee() {
+            return fee;
         }
 
 
@@ -197,6 +207,19 @@ public class SharedCoin extends HttpServlet {
 
         public long getProposalID() {
             return proposalID;
+        }
+
+        @Override
+        public String toString() {
+            return "CompletedTransaction{" +
+                    "proposalID=" + proposalID +
+                    ", transaction=" + transaction +
+                    ", isConfirmedBroadcastSuccessfully=" + isConfirmedBroadcastSuccessfully +
+                    ", lastCheckedConfirmed=" + lastCheckedConfirmed +
+                    ", completedTime=" + completedTime +
+                    ", pushCount=" + pushCount +
+                    ", nParticipants=" + nParticipants +
+                    '}';
         }
     }
 
@@ -277,6 +300,7 @@ public class SharedCoin extends HttpServlet {
             return ecKey;
         }
 
+
         public ECKey findECKey(String address) throws Exception {
             Lock lock = updateLock.readLock();
 
@@ -288,6 +312,32 @@ public class SharedCoin extends HttpServlet {
             } finally {
                 lock.unlock();
             }
+        }
+
+        public boolean addECKey(String address, ECKey key) throws Exception {
+            Lock lock = updateLock.writeLock();
+
+            lock.lock();
+            try {
+                MyRemoteWallet wallet = getWallet();
+
+                String compressed = key.toAddressCompressed(NetworkParameters.prodNet()).toString();
+
+                String returnVal = wallet.addKey(key, null, !address.equals(compressed), "sharedcoin", "" + ProtocolVersion);
+
+                if (returnVal.equals(address)) {
+                    if (wallet.remoteSave(null)) {
+                        return true;
+                    } else {
+                        throw new Exception("Error Saving Wallet");
+                    }
+                }
+
+            } finally {
+                lock.unlock();
+            }
+
+            return false;
         }
 
         public boolean isOurAddress(String address) throws Exception {
@@ -393,7 +443,7 @@ public class SharedCoin extends HttpServlet {
             }
         }
 
-        private void logDeletedPrivateKey(String address, ECKey key) throws IOException {
+        private synchronized void logDeletedPrivateKey(String address, ECKey key) throws IOException {
             FileWriter fWriter = new FileWriter(AdminServlet.DeletedPrivateKeysLogFilePath, true);
 
             fWriter.write(address + " " + Base58.encode(key.getPrivKeyBytes()) + "\n");
@@ -918,7 +968,7 @@ public class SharedCoin extends HttpServlet {
 
                 if (age > ProposalExpiryTimeFailedToBroadcast) {
                     recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
-                } else if (completedTransaction.getPushCount() < 3) {
+                } else if (completedTransaction.getPushCount() < 3 && age < 21600000) {
                     System.out.println("Re-broadcasting transaction");
 
                     try {
@@ -935,6 +985,8 @@ public class SharedCoin extends HttpServlet {
         long now = System.currentTimeMillis();
         for (Proposal proposal : activeProposals.values()) {
             if (proposal.getCreatedTime() > 0 && proposal.getCreatedTime() < now-ProposalExpiryTime) {
+                DOSManager.failedToSignProposal(proposal);
+
                 activeProposals.remove(proposal.getProposalID());
             }
         }
@@ -1015,6 +1067,8 @@ public class SharedCoin extends HttpServlet {
                             break;
                         }
 
+
+
                         Set<String> thisOfferDestinationAddresses = offer.getRequestedOutputAddresses();
                         if (!Collections.disjoint(allDestinationAddresses, offer.getRequestedOutputAddresses())) {
                             //All output addresses must be unique
@@ -1024,8 +1078,19 @@ public class SharedCoin extends HttpServlet {
 
                         allDestinationAddresses.addAll(thisOfferDestinationAddresses);
 
-                        if (!proposal.addOffer(offer)) {
-                            throw new Exception("Error Adding Offer To Proposal");
+                        if (DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP()) && proposal.getOffers().size() == 0) {
+                            //We only allow IPs that have failed to sign to join a proposal on their own
+                            //That way it doesn't affect other users
+
+                            if (!proposal.addOffer(offer)) {
+                                throw new Exception("Error Adding Offer To Proposal");
+                            }
+
+                            break;
+                        } else {
+                            if (!proposal.addOffer(offer)) {
+                                throw new Exception("Error Adding Offer To Proposal");
+                            }
                         }
                     }
                 }
@@ -1107,9 +1172,14 @@ public class SharedCoin extends HttpServlet {
         private long createdTime = System.currentTimeMillis();
         private Transaction transaction;
         boolean isFinalized = false;
+        boolean isBroadcast = false;
 
         public synchronized Transaction getTransaction() {
             return transaction;
+        }
+
+        public Map<Integer, Script> getInput_scripts() {
+            return input_scripts;
         }
 
         public Offer findOffer(long offerID) {
@@ -1182,7 +1252,7 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasSpentIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
                     if (completedTransaction != null) {
                         throw new Exception("Sanity Check Failed. User Offer Outpoint already Spent in Completed Transaction " + outpointWithValue);
                     }
@@ -1197,7 +1267,7 @@ public class SharedCoin extends HttpServlet {
             for (Offer offer : ourOffers) {
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
 
-                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasSpentIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
                     if (completedTransaction != null) {
                         throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent in Completed Transaction " + outpointWithValue);
                     }
@@ -1234,6 +1304,7 @@ public class SharedCoin extends HttpServlet {
             completedTransaction.lastCheckedConfirmed = 0;
             completedTransaction.proposalID = getProposalID();
             completedTransaction.nParticipants = getOffers().size();
+            completedTransaction.fee = getTransactionFee();
 
             recentlyCompletedTransactions.put(new Hash(getTransaction().getHash().getBytes()), completedTransaction);
 
@@ -1242,6 +1313,8 @@ public class SharedCoin extends HttpServlet {
             boolean pushed = completedTransaction.pushTransaction();
 
             lastPushedTransactionTime = System.currentTimeMillis();
+
+            isBroadcast = pushed;
 
             synchronized(this) {
                 this.notifyAll();
@@ -1513,7 +1586,13 @@ public class SharedCoin extends HttpServlet {
 
                     alreadyTested.add(outpoint);
 
-                    if (selectedBeans.contains(outpoint) || findCompletedTransactionOutpointWasUsedIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) != null || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
+                    if (selectedBeans.contains(outpoint) || findCompletedTransactionOutpointWasSpentIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) != null || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
+                        continue;
+                    }
+
+                    //If the fee is ;ess than expected dont spend the outputs
+                    CompletedTransaction createdIn = findCompletedTransactionOutpointWasCreatedIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN());
+                    if (createdIn != null && createdIn.getFee() > 0 && createdIn.getFee() < createdIn.getExpectedFee()) {
                         continue;
                     }
 
@@ -2037,6 +2116,16 @@ public class SharedCoin extends HttpServlet {
 
             if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                 change = change.subtract(extraFeeNeeded);
+                feedPaid = feedPaid.add(extraFeeNeeded);
+            }
+
+            if (change.compareTo(BigInteger.ZERO) > 0) {
+                //Check fee
+                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + ((transaction.getInputs().size()+1)*scriptSigSize)) / 1000d);
+                extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
+
+                change = change.subtract(extraFeeNeeded);
+                feedPaid = feedPaid.add(extraFeeNeeded);
             }
 
             if (change.compareTo(BigInteger.ZERO) > 0) {
@@ -2208,7 +2297,7 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
-    public static CompletedTransaction findCompletedTransactionOutpointWasUsedIn(Hash hash, int index) {
+    public static CompletedTransaction findCompletedTransactionOutpointWasSpentIn(Hash hash, int index) {
 
         for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
             List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
@@ -2219,6 +2308,15 @@ public class SharedCoin extends HttpServlet {
                 if (new Hash(outPoint.getHash().getBytes()).equals(hash) && outPoint.getIndex() == index)
                     return completedTransaction;
             }
+        }
+
+        return null;
+    }
+
+    public static CompletedTransaction findCompletedTransactionOutpointWasCreatedIn(Hash hash, int index) {
+        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+            if (new Hash(completedTransaction.getTransaction().getHash().getBytes()).equals(hash))
+                return completedTransaction;
         }
 
         return null;
@@ -2421,6 +2519,7 @@ public class SharedCoin extends HttpServlet {
         private transient Token token;
         private transient MyTransaction zeroConfirmationTransactionAllowedToSpend;
         private transient long forceProposalMaxAge;
+        private transient String hashedUserIP;
 
         public Offer() {
             offerID = randomID();
@@ -2429,6 +2528,10 @@ public class SharedCoin extends HttpServlet {
 
         public Token getToken() {
             return token;
+        }
+
+        public String getHashedUserIP() {
+            return hashedUserIP;
         }
 
         private double getFeePercent() {
@@ -2618,607 +2721,496 @@ public class SharedCoin extends HttpServlet {
     }
 
     @Override
-    public void doOptions(HttpServletRequest req, HttpServletResponse resp) throws IOException, ServletException {
-        resp.setHeader("Access-Control-Allow-Origin", "*");
-        resp.setHeader("Access-Control-Allow-Methods", "GET, POST");
-        resp.setHeader("Access-Control-Allow-Headers", "X-Requested-With, Content-Type, Accept, Origin, If-Modified-Since, Cache-Control, User-Agent");
-        resp.setHeader("Access-Control-Max-Age", "86400");
-        resp.setHeader("Allow", "GET, POST, OPTIONS");
+    public void doOptions(HttpServletRequest req, HttpServletResponse res) throws IOException, ServletException {
+        setCORS(req, res);
+
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST");
+        res.setHeader("Access-Control-Allow-Headers", "X-Requested-With, Content-Type, Accept, Origin, If-Modified-Since, Cache-Control, User-Agent");
+        res.setHeader("Access-Control-Max-Age", "86400");
+        res.setHeader("Allow", "GET, POST, OPTIONS");
     }
 
-    public void setCORSAllowAll(HttpServletResponse res) {
-        res.setHeader("Access-Control-Allow-Origin", "*");
+    public void setCORS(HttpServletRequest req, HttpServletResponse res) throws IOException {
+        String origin = req.getHeader("Origin");
+
+        List<String> allowedDomains = (List) Settings.instance().getList("cors_domains");
+
+        if (origin == null || allowedDomains.contains("*")) {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+        } else if (allowedDomains.contains(origin)) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
+        } else {
+            throw new IOException("CORS Denied");
+        }
     }
 
     @Override
     protected void doPost(HttpServletRequest req, final HttpServletResponse res) throws ServletException, IOException {
 
+        DOSManager.RequestContainer container = null;
         try {
-            setCORSAllowAll(res);
+            container = DOSManager.registerRequestStart(req);
 
-            if (enabled == false && !AdminServlet.isAuthorized(req)) {
-                throw new Exception("Shared Coin is currently disabled");
-            }
+            try {
+                setCORS(req, res);
 
-            String versionString = req.getParameter("version");
-            int version = 1;
-            if (versionString != null) {
-                try {
-                    version = Integer.valueOf(versionString);
-
-                    if (version < MinSupportedVersion)
-                        throw new Exception("Unsupported Version");
-                } catch (Exception e) {
-                    throw new Exception("Unsupported Version");
+                if (enabled == false && !AdminServlet.isAuthorized(req)) {
+                    throw new Exception("Shared Coin is currently disabled");
                 }
-            }
 
-            String method = req.getParameter("method");
-            if (method != null) {
-                if (method.equals("submit_offer")) {
-                    Offer existingConflictingOffer = null;
-                    MyTransactionOutput outputAlreadySpent = null;
+                String versionString = req.getParameter("version");
+                int version = 1;
+                if (versionString != null) {
+                    try {
+                        version = Integer.valueOf(versionString);
 
-                    Offer offer = new Offer();
-
-                    JSONObject jsonObject = (JSONObject) new JSONParser().parse(req.getParameter("offer"));
-
-                    JSONArray inputs = (JSONArray) jsonObject.get("offered_outpoints");
-
-                    if (inputs == null || inputs.size() == 0) {
-                        throw new Exception("You Must Provide One Or More Inputs");
+                        if (version < MinSupportedVersion)
+                            throw new Exception("Unsupported Version");
+                    } catch (Exception e) {
+                        throw new Exception("Unsupported Version");
                     }
+                }
 
-                    if (inputs.size() > MaximumOfferNumberOfInputs) {
-                        throw new Exception("Maximum number of inputs exceeded");
-                    }
+                String method = req.getParameter("method");
 
-                    JSONArray outputs = (JSONArray) jsonObject.get("request_outputs");
 
-                    if (outputs == null || outputs.size() == 0) {
-                        throw new Exception("You Must Provide One Or More Outputs");
-                    }
+                if (method != null) {
+                    if (method.equals("submit_offer")) {
+                        Offer existingConflictingOffer = null;
+                        MyTransactionOutput outputAlreadySpent = null;
 
-                    if (outputs.size() > MaximumOfferNumberOfOutputs) {
-                        throw new Exception("Maximum number of outputs exceeded");
-                    }
+                        Offer offer = new Offer();
 
-                    if (version >= 3) {
-                        String tokenString = req.getParameter("token");
+                        final String userIP = AdminServlet.getRealIP(req);
 
-                        if (tokenString == null) {
-                            throw new Exception("You must provide a token");
+                        offer.hashedUserIP = Util.SHA256Hex(userIP);
+
+                        JSONObject jsonObject = (JSONObject) new JSONParser().parse(req.getParameter("offer"));
+
+                        JSONArray inputs = (JSONArray) jsonObject.get("offered_outpoints");
+
+                        if (inputs == null || inputs.size() == 0) {
+                            throw new Exception("You Must Provide One Or More Inputs");
                         }
 
-                        Token token = Token.decrypt(tokenString);
-
-                        if (token.created < System.currentTimeMillis()-TokenExpiryTime) {
-                            throw new Exception("Token has expired");
+                        if (inputs.size() > MaximumOfferNumberOfInputs) {
+                            throw new Exception("Maximum number of inputs exceeded");
                         }
 
-                        if (!token.created_ip.equals(AdminServlet.getRealIP(req))) {
-                            throw new Exception("Token Requester Changed");
+                        JSONArray outputs = (JSONArray) jsonObject.get("request_outputs");
+
+                        if (outputs == null || outputs.size() == 0) {
+                            throw new Exception("You Must Provide One Or More Outputs");
                         }
 
-                        offer.token = token;
-                        offer.feePercent = token.fee_percent;
-                    } else {
-                        offer.feePercent = feePercentForRequest(req);
-                    }
+                        if (outputs.size() > MaximumOfferNumberOfOutputs) {
+                            throw new Exception("Maximum number of outputs exceeded");
+                        }
 
-                    String userMaxAgeString = req.getParameter("offer_max_age");
-                    if (userMaxAgeString != null) {
-                        try {
-                            long userMaxAge = Long.valueOf(userMaxAgeString);
+                        if (version >= 3) {
+                            String tokenString = req.getParameter("token");
 
-                            if (userMaxAge < 10000) {
-                                throw new Exception("Max Age Must Be Greater 10s");
+                            if (tokenString == null) {
+                                throw new Exception("You must provide a token");
                             }
 
-                            if (userMaxAge > 3600000) {
-                                throw new Exception("Max Age Must Be Less Than 1 Hour");
+                            Token token = Token.decrypt(tokenString);
+
+                            if (token.created < System.currentTimeMillis()-TokenExpiryTime) {
+                                throw new Exception("Token has expired");
                             }
 
-                            offer.forceProposalMaxAge = userMaxAge;
-                        } catch (Exception e) {
-                            throw new Exception("Invalid Numerical Value");
-                        }
-                    } else {
-                        offer.forceProposalMaxAge = randomLong(OfferForceProposalAgeMin, OfferForceProposalAgeMax);
-                    }
+                            if (!token.created_ip.equals(userIP)) {
+                                throw new Exception("Token Requester Changed");
+                            }
 
-                    Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
-                    for (Object _input : inputs) {
-                        JSONObject input = (JSONObject)_input;
-
-                        Hash hash = new Hash((String)input.get("hash"));
-                        short index;
-                        try {
-                            index = Short.valueOf(input.get("index").toString());
-                        } catch (Exception e) {
-                            throw new Exception("Invalid Integer");
+                            offer.token = token;
+                            offer.feePercent = token.fee_percent;
+                        } else {
+                            offer.feePercent = feePercentForRequest(req);
                         }
 
-                        MyTransaction transaction = _transactionCache.get(hash);
-                        if (transaction == null) {
-                            Exception _e = null;
+                        String userMaxAgeString = req.getParameter("offer_max_age");
+                        if (userMaxAgeString != null) {
+                            try {
+                                long userMaxAge = Long.valueOf(userMaxAgeString);
 
-                            for (int ii = 0; ii < 2; ++ii) {
-                                try {
-                                    transaction = MyRemoteWallet.getTransactionByHash(hash, true);
-
-                                    if (transaction != null) {
-                                        break;
-                                    }
-                                } catch (Exception e) {
-                                    _e = e;
+                                if (userMaxAge < 10000) {
+                                    throw new Exception("Max Age Must Be Greater 10s");
                                 }
 
-                                Thread.sleep(5000);
+                                if (userMaxAge > 3600000) {
+                                    throw new Exception("Max Age Must Be Less Than 1 Hour");
+                                }
+
+                                offer.forceProposalMaxAge = userMaxAge;
+                            } catch (Exception e) {
+                                throw new Exception("Invalid Numerical Value");
+                            }
+                        } else {
+                            offer.forceProposalMaxAge = randomLong(OfferForceProposalAgeMin, OfferForceProposalAgeMax);
+                        }
+
+                        Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
+                        for (Object _input : inputs) {
+                            JSONObject input = (JSONObject)_input;
+
+                            String hashString = input.get("hash").toString();
+
+                            if (hashString == null || hashString.length() != 64) {
+                                throw new Exception("Invalid Input Hash");
                             }
 
-                            if (transaction == null) {
-                                for (int ii = 0; ii < 5; ++ii) {
-                                    //If it is a transaction we recently broadcast may be blockchain.info is lagging
-                                    //Wait a bit
-                                    if (recentlyCompletedTransactions.containsKey(hash) || findActiveProposalByTransaction(hash) != null) {
-                                        try {
-                                            transaction = MyRemoteWallet.getTransactionByHash(hash, true);
+                            Hash hash = new Hash((String)input.get("hash"));
 
-                                            if (transaction != null) {
-                                                break;
-                                            }
-                                        } catch (Exception e) {
-                                            _e = e;
+
+                            short index;
+                            try {
+                                index = Short.valueOf(input.get("index").toString());
+                            } catch (Exception e) {
+                                throw new Exception("Invalid Integer");
+                            }
+
+                            MyTransaction transaction = _transactionCache.get(hash);
+                            if (transaction == null) {
+                                Exception _e = null;
+
+                                for (int ii = 0; ii < 2; ++ii) {
+                                    try {
+                                        transaction = MyRemoteWallet.getTransactionByHash(hash, true);
+
+                                        if (transaction != null) {
+                                            break;
                                         }
-
-                                        Thread.sleep(10000);
+                                    } catch (Exception e) {
+                                        _e = e;
                                     }
+
+                                    Thread.sleep(5000);
+                                }
+
+                                if (transaction == null) {
+                                    for (int ii = 0; ii < 5; ++ii) {
+                                        //If it is a transaction we recently broadcast may be blockchain.info is lagging
+                                        //Wait a bit
+                                        if (recentlyCompletedTransactions.containsKey(hash) || findActiveProposalByTransaction(hash) != null) {
+                                            try {
+                                                transaction = MyRemoteWallet.getTransactionByHash(hash, true);
+
+                                                if (transaction != null) {
+                                                    break;
+                                                }
+                                            } catch (Exception e) {
+                                                _e = e;
+                                            }
+
+                                            Thread.sleep(10000);
+                                        }
+                                    }
+                                }
+
+                                if (transaction == null) {
+                                    if (_e != null) _e.printStackTrace();
+
+                                    throw new Exception("Input Tx is null " + hash);
+                                }
+
+                                _transactionCache.put(hash, transaction);
+                            }
+
+                            if (transaction.getHeight() == 0) {
+                                //Allow unconfirmed inputs from transaction we created
+                                if (!isTransactionCreatedByUs(hash)) {
+                                    throw new Exception("Only confirmed inputs accepted " + hash);
+                                } else {
+                                    offer.zeroConfirmationTransactionAllowedToSpend = transaction;
                                 }
                             }
 
-                            if (transaction == null) {
-                                if (_e != null) _e.printStackTrace();
-
-                                throw new Exception("Input Tx is null " + hash);
+                            if (transaction.getOutputs().size() <= index) {
+                                throw new Exception("Outputs size less than index");
                             }
 
-                            _transactionCache.put(hash, transaction);
-                        }
+                            TransactionOutput outPoint = transaction.getOutputs().get(index);
 
-                        if (transaction.getHeight() == 0) {
-                            //Allow unconfirmed inputs from transaction we created
-                            if (!isTransactionCreatedByUs(hash)) {
-                                throw new Exception("Only confirmed inputs accepted " + hash);
-                            } else {
-                                offer.zeroConfirmationTransactionAllowedToSpend = transaction;
+                            OutpointWithValue outpointWithValue = new OutpointWithValue();
+
+                            outpointWithValue.hash = hash;
+                            outpointWithValue.index = index;
+                            outpointWithValue.value = outPoint.getValue().longValue();
+
+                            if (outpointWithValue.value < HardErrorMinimumInputValue) {
+                                throw new Exception("The Minimum Input Value is " + (HardErrorMinimumInputValue / (double)COIN) + " BTC");
+                            }
+
+                            if (outpointWithValue.value > MaximumInputValue) {
+                                throw new Exception("The Maximum Input Value is " + (MaximumInputValue / (double)COIN) + " BTC");
+                            }
+
+                            MyTransactionOutput output = (MyTransactionOutput) transaction.getOutputs().get(index);
+
+                            if (output.isSpent()) {
+                                outputAlreadySpent = output;
+                            }
+
+                            outpointWithValue.script = output.getScriptBytes();
+
+                            if (outpointWithValue.script == null) {
+                                throw new Exception("Output Script is null");
+                            }
+
+                            if (!outpointWithValue.getScript().isSentToAddress() && !outpointWithValue.getScript().isSentToRawPubKey()) {
+                                throw new Exception("Invalid output script. Only Address or PubKey Outputs currently supported.");
+                            }
+
+                            if (!offer.addOfferedOutpoint(outpointWithValue)) {
+                                throw new Exception("Error Adding Outpoint");
                             }
                         }
 
-                        if (transaction.getOutputs().size() <= index) {
-                            throw new Exception("Outputs size less than index");
+                        for (Object _output : outputs) {
+                            JSONObject output = (JSONObject)_output;
+
+                            Script script = newScript(Hex.decode((String) output.get("script")));
+                            long value;
+                            try {
+                                value = Long.valueOf(output.get("value").toString());
+                            } catch (Exception e) {
+                                throw new Exception("Invalid Integer");
+                            }
+
+                            if (!script.isSentToAddress() && !script.isSentToRawPubKey() && !script.isPayToScriptHash()) {
+                                throw new Exception("Strange script output");
+                            }
+
+                            //The client can cheat here by requesting the largest output be excluded even if it isn't the change address
+                            //Can be detected next repetition
+                            //Or enforced by checking the available inputs and determining if the client was able to use smaller inputs (Also possible to predict change address this method)
+                            boolean excludeFromFee = false;
+
+                            if (output.get("exclude_from_fee") != null) {
+                                excludeFromFee = Boolean.valueOf(output.get("exclude_from_fee").toString());
+                            }
+
+                            if (value < MinimumOutputValue && !excludeFromFee) {
+                                throw new Exception("The Minimum Output Value Size is " + (MinimumOutputValue / (double)COIN) + " BTC  (Actual: " + (value / (double)COIN) + ")");
+                            } else if (value < MinimumOutputValueExcludeFee && excludeFromFee) {
+                                throw new Exception("The Minimum Output Value Excluding Fee is " + (MinimumOutputValueExcludeFee / (double)COIN) + " BTC  (Actual: " + (value / (double)COIN) + ")");
+                            }
+
+                            if (value > HardErrorMaximumOutputValue && !excludeFromFee) {
+                                throw new Exception("The Maximum Output Value Size is " + (HardErrorMaximumOutputValue / (double)COIN) + " BTC (Actual: " + (value / (double)COIN) + ")");
+                            }
+
+                            Output outputContainer = new Output();
+
+                            outputContainer.script = script.program;
+                            outputContainer.value = value;
+                            outputContainer.excludeFromFee = excludeFromFee;
+
+                            if (offer.getRequestedOutputAddresses().contains(script.getToAddress().toString())) {
+                                throw new Exception("Each Output Address must be unique");
+                            }
+
+                            if (!offer.addRequestedOutput(outputContainer)) {
+                                throw new Exception("Error Adding Requested Output");
+                            }
                         }
 
-                        TransactionOutput outPoint = transaction.getOutputs().get(index);
+                        long totalInputValue = offer.getValueOffered();
+                        long totalOutputValue = offer.getValueOutputRequested();
 
-                        OutpointWithValue outpointWithValue = new OutpointWithValue();
-
-                        outpointWithValue.hash = hash;
-                        outpointWithValue.index = index;
-                        outpointWithValue.value = outPoint.getValue().longValue();
-
-                        if (outpointWithValue.value < HardErrorMinimumInputValue) {
-                            throw new Exception("The Minimum Input Value is " + (HardErrorMinimumInputValue / (double)COIN) + " BTC");
+                        if (totalInputValue < totalOutputValue) {
+                            throw new Exception("Input Value Greater Than Output Value");
                         }
 
-                        if (outpointWithValue.value > MaximumInputValue) {
-                            throw new Exception("The Maximum Input Value is " + (MaximumInputValue / (double)COIN) + " BTC");
+                        long expectedFee = offer.calculateFeeExpected();
+
+                        if (version >= 2) {
+                            expectedFee = Math.max(expectedFee, MinimumFee);
                         }
 
-                        MyTransactionOutput output = (MyTransactionOutput) transaction.getOutputs().get(index);
-
-                        if (output.isSpent()) {
-                            outputAlreadySpent = output;
+                        if (totalInputValue-totalOutputValue < expectedFee) {
+                            throw new Exception("Insufficient Fee " + (totalInputValue-totalOutputValue) + " expected " + expectedFee);
                         }
 
-                        outpointWithValue.script = output.getScriptBytes();
-
-                        if (outpointWithValue.script == null) {
-                            throw new Exception("Output Script is null");
+                        if (totalInputValue-totalOutputValue > expectedFee) {
+                            throw new Exception("Paid too much fee. Possibly a client error. (Expected: " + expectedFee + " Paid: " + (totalInputValue-totalOutputValue) + ")");
                         }
 
-                        if (!outpointWithValue.getScript().isSentToAddress() && !outpointWithValue.getScript().isSentToRawPubKey()) {
-                            throw new Exception("Invalid output script. Only Address or PubKey Outputs currently supported.");
-                        }
 
-                        if (!offer.addOfferedOutpoint(outpointWithValue)) {
-                            throw new Exception("Error Adding Outpoint");
-                        }
-                    }
+                        //Everything looks good so far
+                        //Check for any conflicting inputs
+                        //Then add to pending
 
-                    for (Object _output : outputs) {
-                        JSONObject output = (JSONObject)_output;
+                        JSONObject obj = new JSONObject();
 
-                        Script script = newScript(Hex.decode((String) output.get("script")));
-                        long value;
+                        Lock lock = modifyPendingOffersLock.writeLock();
+
+                        lock.lock();
                         try {
-                            value = Long.valueOf(output.get("value").toString());
+                            for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                                Offer tmpExistingConflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
+
+                                if (existingConflictingOffer != null && existingConflictingOffer != tmpExistingConflictingOffer) {
+                                    throw new Exception("Multiple Conflicting Offers");
+                                }
+
+                                existingConflictingOffer = tmpExistingConflictingOffer;
+                            }
+
+                            if (existingConflictingOffer != null) {
+                                Logger.log(Logger.SeverityWARN, "Offer " + offer + " has conflicting offer " + existingConflictingOffer);
+
+                                if (offer.isTheSameAsOffer(existingConflictingOffer)) {
+                                    Logger.log(Logger.SeverityWARN, "Conflicting Offer Is Equal");
+
+                                    obj.put("offer_id", existingConflictingOffer.getOfferID());
+                                } else {
+                                    throw new Exception("Conflicting Offer");
+                                }
+                            } else {
+
+                                //Check we didn't recently spend any outputs
+                                for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                                    {
+                                        CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasSpentIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                                        if (completedTransaction != null) {
+                                            Logger.log(Logger.SeverityWARN, "User tried to submit outpoint spent in completed transaction " + AdminServlet.getRealIP(req));
+                                            Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
+                                            Logger.log(Logger.SeverityWARN, "   This is the conflicting transaction " + completedTransaction);
+                                            Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + completedTransaction.completedTime);
+
+                                            throw new Exception("Outpoint (" + outpointWithValue + ") already Spent in Completed Transaction " + completedTransaction);
+                                        }
+                                    }
+
+                                    {
+                                        Offer conflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
+                                        if (conflictingOffer != null && !conflictingOffer.equals(offer)) {
+                                            Logger.log(Logger.SeverityWARN, "User tried to submit outpoint conflicting with an existing offer " + AdminServlet.getRealIP(req));
+                                            Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
+                                            Logger.log(Logger.SeverityWARN, "   This is the conflicting offer " + conflictingOffer);
+                                            Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + conflictingOffer.getReceivedTime());
+
+                                            throw new Exception("Outpoint (" + outpointWithValue + ") already Spent In Offer " + conflictingOffer);
+                                        }
+                                    }
+                                }
+
+                                //If Blockchain.info reports an output is spent it is only fatal when a new offer is being submitted
+                                if (outputAlreadySpent != null) {
+                                    throw new Exception("Outpoint already spent " + outputAlreadySpent);
+                                }
+
+                                addOfferToPending(offer);
+
+                                obj.put("offer_id", offer.getOfferID());
+                            }
+                        } finally {
+                            lock.unlock();
+                        }
+
+                        res.setContentType("application/json");
+
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("get_offer_id")) {
+                        Long offerID;
+                        try {
+                            offerID = Long.valueOf(req.getParameter("offer_id"));
                         } catch (Exception e) {
                             throw new Exception("Invalid Integer");
                         }
 
-                        if (!script.isSentToAddress() && !script.isSentToRawPubKey() && !script.isPayToScriptHash()) {
-                            throw new Exception("Strange script output");
-                        }
+                        JSONObject obj = new JSONObject();
 
-                        //The client can cheat here by requesting the largest output be excluded even if it isn't the change address
-                        //Can be detected next repetition
-                        //Or enforced by checking the available inputs and determining if the client was able to use smaller inputs (Also possible to predict change address this method)
-                        boolean excludeFromFee = false;
+                        Offer offer = findOffer(offerID);
 
-                        if (output.get("exclude_from_fee") != null) {
-                            excludeFromFee = Boolean.valueOf(output.get("exclude_from_fee").toString());
-                        }
+                        if (offer == null) {
+                            obj.put("status", "not_found");
+                        } else {
+                            Proposal proposal = findActiveProposalFromOffer(offer);
 
-                        if (value < MinimumOutputValue && !excludeFromFee) {
-                            throw new Exception("The Minimum Output Value Size is " + (MinimumOutputValue / (double)COIN) + " BTC  (Actual: " + (value / (double)COIN) + ")");
-                        } else if (value < MinimumOutputValueExcludeFee && excludeFromFee) {
-                            throw new Exception("The Minimum Output Value Excluding Fee is " + (MinimumOutputValueExcludeFee / (double)COIN) + " BTC  (Actual: " + (value / (double)COIN) + ")");
-                        }
+                            if (proposal == null) {
+                                //Long Polling
+                                synchronized(offer) {
+                                    offer.wait(MaxPollTime);
+                                }
 
-                        if (value > HardErrorMaximumOutputValue && !excludeFromFee) {
-                            throw new Exception("The Maximum Output Value Size is " + (HardErrorMaximumOutputValue / (double)COIN) + " BTC (Actual: " + (value / (double)COIN) + ")");
-                        }
-
-                        Output outputContainer = new Output();
-
-                        outputContainer.script = script.program;
-                        outputContainer.value = value;
-                        outputContainer.excludeFromFee = excludeFromFee;
-
-                        if (offer.getRequestedOutputAddresses().contains(script.getToAddress().toString())) {
-                            throw new Exception("Each Output Address must be unique");
-                        }
-
-                        if (!offer.addRequestedOutput(outputContainer)) {
-                            throw new Exception("Error Adding Requested Output");
-                        }
-                    }
-
-                    long totalInputValue = offer.getValueOffered();
-                    long totalOutputValue = offer.getValueOutputRequested();
-
-                    if (totalInputValue < totalOutputValue) {
-                        throw new Exception("Input Value Greater Than Output Value");
-                    }
-
-                    long expectedFee = offer.calculateFeeExpected();
-
-                    if (version >= 2) {
-                        expectedFee = Math.max(expectedFee, MinimumFee);
-                    }
-
-                    if (totalInputValue-totalOutputValue < expectedFee) {
-                        throw new Exception("Insufficient Fee " + (totalInputValue-totalOutputValue) + " expected " + expectedFee);
-                    }
-
-                    if (totalInputValue-totalOutputValue > expectedFee) {
-                        throw new Exception("Paid too much fee. Possibly a client error. (Expected: " + expectedFee + " Paid: " + (totalInputValue-totalOutputValue) + ")");
-                    }
-
-
-                    //Everything looks good so far
-                    //Check for any conflicting inputs
-                    //Then add to pending
-
-                    JSONObject obj = new JSONObject();
-
-                    Lock lock = modifyPendingOffersLock.writeLock();
-
-                    lock.lock();
-                    try {
-                        for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                            Offer tmpExistingConflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
-
-                            if (existingConflictingOffer != null && existingConflictingOffer != tmpExistingConflictingOffer) {
-                                throw new Exception("Multiple Conflicting Offers");
+                                proposal = findActiveProposalFromOffer(offer);
                             }
 
-                            existingConflictingOffer = tmpExistingConflictingOffer;
-                        }
-
-                        if (existingConflictingOffer != null) {
-                            Logger.log(Logger.SeverityWARN, "Offer " + offer + " has conflicting offer " + existingConflictingOffer);
-
-                            if (offer.isTheSameAsOffer(existingConflictingOffer)) {
-                                Logger.log(Logger.SeverityWARN, "Conflicting Offer Is Equal");
-
-                                obj.put("offer_id", existingConflictingOffer.getOfferID());
+                            if (proposal == null) {
+                                obj.put("status", "waiting");
                             } else {
-                                throw new Exception("Conflicting Offer");
+                                obj.put("status", "active_proposal");
+                                obj.put("proposal_id", proposal.getProposalID());
                             }
-                        } else {
-                            //Check we didn't recently spend any outputs
-                            for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-
-                                {
-                                    CompletedTransaction completedTransaction = findCompletedTransactionOutpointWasUsedIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
-                                    if (completedTransaction != null) {
-                                        Logger.log(Logger.SeverityWARN, "User tried to submit outpoint spent in completed transaction " + AdminServlet.getRealIP(req));
-                                        Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
-                                        Logger.log(Logger.SeverityWARN, "   This is the conflicting transaction " + completedTransaction);
-                                        Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + completedTransaction.completedTime);
-
-                                        throw new Exception("Outpoint (" + outpointWithValue + ") already Spent in Completed Transaction " + completedTransaction);
-                                    }
-                                }
-
-                                {
-                                    Offer conflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
-                                    if (conflictingOffer != null && !conflictingOffer.equals(offer)) {
-                                        Logger.log(Logger.SeverityWARN, "User tried to submit outpoint conflicting with an existing offer " + AdminServlet.getRealIP(req));
-                                        Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
-                                        Logger.log(Logger.SeverityWARN, "   This is the conflicting offer " + conflictingOffer);
-                                        Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + conflictingOffer.getReceivedTime());
-
-                                        throw new Exception("Outpoint (" + outpointWithValue + ") already Spent In Offer " + conflictingOffer);
-                                    }
-                                }
-                            }
-
-                            //If Blockchain.info reports an output is spent it is only fatal when a new offer is being submitted
-                            if (outputAlreadySpent != null) {
-                                throw new Exception("Outpoint already spent " + outputAlreadySpent);
-                            }
-
-                            addOfferToPending(offer);
-
-                            obj.put("offer_id", offer.getOfferID());
                         }
-                    } finally {
-                        lock.unlock();
-                    }
 
-                    res.setContentType("application/json");
+                        res.setContentType("application/json");
 
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("get_offer_id")) {
-                    Long offerID;
-                    try {
-                        offerID = Long.valueOf(req.getParameter("offer_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("get_info")) {
+                        JSONObject obj = new JSONObject();
 
-                    JSONObject obj = new JSONObject();
+                        Token token = new Token();
 
-                    Offer offer = findOffer(offerID);
+                        token.fee_percent = feePercentForRequest(req);
+                        token.created = System.currentTimeMillis();
+                        token.created_ip = AdminServlet.getRealIP(req);
 
-                    if (offer == null) {
-                        obj.put("status", "not_found");
-                    } else {
-                        Proposal proposal = findActiveProposalFromOffer(offer);
+                        obj.put("fee_percent", token.fee_percent);
+                        obj.put("token", token.encrypt());
+                        obj.put("enabled", true);
+                        obj.put("minimum_output_value_exclude_fee", MinimumOutputValueExcludeFee);
+                        obj.put("minimum_output_value", MinimumOutputValue);
+                        obj.put("maximum_output_value", MaximumOutputValue);
+                        obj.put("minimum_input_value", MinimumInputValue);
+                        obj.put("maximum_input_value", MaximumInputValue);
+                        obj.put("maximum_offer_number_of_inputs", MaximumOfferNumberOfInputs);
+                        obj.put("maximum_offer_number_of_outputs", MaximumOfferNumberOfOutputs);
+                        obj.put("min_supported_version", MinSupportedVersion);
+                        obj.put("recommended_min_iterations", RecommendedMinIterations);
+                        obj.put("recommended_max_iterations", RecommendedMaxIterations);
+                        obj.put("recommended_iterations", randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
+                        obj.put("minimum_fee", MinimumFee);
+
+                        res.setContentType("application/json");
+
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("get_proposal_id")) {
+                        Long proposalID;
+                        try {
+                            proposalID = Long.valueOf(req.getParameter("proposal_id"));
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Integer");
+                        }
+
+                        Long offerID;
+                        try {
+                            offerID = Long.valueOf(req.getParameter("offer_id"));
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Integer");
+                        }
+
+                        Proposal proposal = findProposal(proposalID);
+
+                        JSONObject obj = new JSONObject();
 
                         if (proposal == null) {
-                            //Long Polling
-                            synchronized(offer) {
-                                offer.wait(MaxPollTime);
+                            CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
+                            if (completedTransaction != null) {
+                                obj.put("status", "complete");
+                                obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
+
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
+                                byte[] serialized = stream.toByteArray();
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                            } else {
+                                obj.put("status", "not_found");
                             }
-
-                            proposal = findActiveProposalFromOffer(offer);
-                        }
-
-                        if (proposal == null) {
-                            obj.put("status", "waiting");
-                        } else {
-                            obj.put("status", "active_proposal");
-                            obj.put("proposal_id", proposal.getProposalID());
-                        }
-                    }
-
-                    res.setContentType("application/json");
-
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("get_info")) {
-                    JSONObject obj = new JSONObject();
-
-                    Token token = new Token();
-
-                    token.fee_percent = feePercentForRequest(req);
-                    token.created = System.currentTimeMillis();
-                    token.created_ip = AdminServlet.getRealIP(req);
-
-                    obj.put("fee_percent", token.fee_percent);
-                    obj.put("token", token.encrypt());
-                    obj.put("enabled", true);
-                    obj.put("minimum_output_value_exclude_fee", MinimumOutputValueExcludeFee);
-                    obj.put("minimum_output_value", MinimumOutputValue);
-                    obj.put("maximum_output_value", MaximumOutputValue);
-                    obj.put("minimum_input_value", MinimumInputValue);
-                    obj.put("maximum_input_value", MaximumInputValue);
-                    obj.put("maximum_offer_number_of_inputs", MaximumOfferNumberOfInputs);
-                    obj.put("maximum_offer_number_of_outputs", MaximumOfferNumberOfOutputs);
-                    obj.put("min_supported_version", MinSupportedVersion);
-                    obj.put("recommended_min_iterations", RecommendedMinIterations);
-                    obj.put("recommended_max_iterations", RecommendedMaxIterations);
-                    obj.put("recommended_iterations", randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
-                    obj.put("minimum_fee", MinimumFee);
-
-                    res.setContentType("application/json");
-
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("get_proposal_id")) {
-                    Long proposalID;
-                    try {
-                        proposalID = Long.valueOf(req.getParameter("proposal_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
-
-                    Long offerID;
-                    try {
-                        offerID = Long.valueOf(req.getParameter("offer_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
-
-                    Proposal proposal = findProposal(proposalID);
-
-                    JSONObject obj = new JSONObject();
-
-                    if (proposal == null) {
-
-                        CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
-                        if (completedTransaction != null) {
-                            obj.put("status", "complete");
-                            obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
-
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                            byte[] serialized = stream.toByteArray();
-                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-                        } else {
-                            obj.put("status", "not_found");
-                        }
-                    } else if (proposal.isFinalized) {
-                        obj.put("status", "complete");
-                        obj.put("tx_hash", proposal.getTransaction().getHash().toString());
-
-                        ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                        proposal.getTransaction().bitcoinSerializeToStream(stream);
-
-                        byte[] serialized = stream.toByteArray();
-
-                        obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-                    } else {
-                        obj.put("proposal_id", proposal.getProposalID());
-
-                        Offer offer = proposal.findOffer(offerID);
-
-                        if (offer == null) {
-                            obj.put("status", "not_found");
-                        } else {
-                            Transaction tx = proposal.getTransaction();
-
-                            obj.put("status", "signatures_needed");
-
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                            tx.bitcoinSerializeToStream(stream);
-
-                            byte[] serialized = stream.toByteArray();
-
-                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-
-                            JSONArray array = new JSONArray();
-                            for (Proposal.SignatureRequest request : proposal.getSignatureRequests(offer)) {
-                                JSONObject pairObj = new JSONObject();
-
-                                pairObj.put("offer_outpoint_index", request.offer_outpoint_index);
-                                pairObj.put("tx_input_index", request.tx_input_index);
-                                pairObj.put("connected_script", new String(Hex.encode(request.connected_script.program), "UTF-8"));
-
-                                array.add(pairObj);
-                            }
-
-                            obj.put("signature_requests", array);
-                        }
-                    }
-
-                    res.setContentType("application/json");
-
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("poll_for_proposal_completed")) {
-                    Long proposalID;
-                    try {
-                        proposalID = Long.valueOf(req.getParameter("proposal_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
-
-                    JSONObject obj = new JSONObject();
-
-                    Proposal proposal = findProposal(proposalID);
-
-                    if (proposal == null) {
-                        CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
-                        if (completedTransaction != null) {
-                            obj.put("status", "complete");
-                            obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
-
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                            byte[] serialized = stream.toByteArray();
-                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-                        } else {
-                            obj.put("status", "not_found");
-                        }
-                    } else {
-                        synchronized(proposal) {
-                            if (!proposal.isFinalized) {
-                                proposal.wait(MaxPollTime);
-                            }
-                        }
-
-                        if (proposal.isFinalized) {
-                            obj.put("status", "complete");
-                            obj.put("tx_hash", proposal.getTransaction().getHash().toString());
-
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                            proposal.getTransaction().bitcoinSerializeToStream(stream);
-
-                            byte[] serialized = stream.toByteArray();
-
-                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-                        } else {
-                            obj.put("status", "waiting");
-                            obj.put("signatures_required", proposal.getNSignaturesNeeded());
-                            obj.put("signatures_submitted", proposal.getNSigned());
-                        }
-                    }
-
-                    res.setContentType("application/json");
-
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("submit_signatures")) {
-                    Long proposalID;
-                    try {
-                        proposalID = Long.valueOf(req.getParameter("proposal_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
-
-                    Long offerID;
-                    try {
-                        offerID = Long.valueOf(req.getParameter("offer_id"));
-                    } catch (Exception e) {
-                        throw new Exception("Invalid Integer");
-                    }
-
-                    final Proposal proposal = findProposal(proposalID);
-
-                    JSONObject obj = new JSONObject();
-
-                    if (proposal == null) {
-                        CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
-                        if (completedTransaction != null) {
-                            obj.put("status", "complete");
-                            obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
-
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                            completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                            byte[] serialized = stream.toByteArray();
-                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
-                        } else {
-                            obj.put("status", "not_found");
-                        }
-                    } else {
-                        Offer offer = proposal.findOffer(offerID);
-
-                        if (offer == null) {
-                            obj.put("status", "not_found");
                         } else if (proposal.isFinalized) {
                             obj.put("status", "complete");
                             obj.put("tx_hash", proposal.getTransaction().getHash().toString());
@@ -3231,59 +3223,226 @@ public class SharedCoin extends HttpServlet {
 
                             obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                         } else {
-                            JSONArray jsonSignaturesArray = (JSONArray) new JSONParser().parse(req.getParameter("input_scripts"));
+                            obj.put("proposal_id", proposal.getProposalID());
 
-                            boolean allSigned = false;
-                            for (Object _jsonSignatureObject : jsonSignaturesArray) {
-                                JSONObject jsonSignatureObject = (JSONObject)_jsonSignatureObject;
+                            Offer offer = proposal.findOffer(offerID);
 
-                                int tx_input_index;
-                                try {
-                                    tx_input_index = Integer.valueOf(jsonSignatureObject.get("tx_input_index").toString());
-                                } catch (Exception e) {
-                                    throw new Exception("Invalid Integer");
+                            if (offer == null) {
+                                obj.put("status", "not_found");
+                            } else {
+                                Transaction tx = proposal.getTransaction();
+
+                                obj.put("status", "signatures_needed");
+
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+
+                                tx.bitcoinSerializeToStream(stream);
+
+                                byte[] serialized = stream.toByteArray();
+
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+
+                                JSONArray array = new JSONArray();
+                                for (Proposal.SignatureRequest request : proposal.getSignatureRequests(offer)) {
+                                    JSONObject pairObj = new JSONObject();
+
+                                    pairObj.put("offer_outpoint_index", request.offer_outpoint_index);
+                                    pairObj.put("tx_input_index", request.tx_input_index);
+                                    pairObj.put("connected_script", new String(Hex.encode(request.connected_script.program), "UTF-8"));
+
+                                    array.add(pairObj);
                                 }
 
-                                int offer_outpoint_index;
-                                try {
-                                    offer_outpoint_index = Integer.valueOf(jsonSignatureObject.get("offer_outpoint_index").toString());
-                                } catch (Exception e) {
-                                    throw new Exception("Invalid Integer");
+                                obj.put("signature_requests", array);
+                            }
+                        }
+
+                        res.setContentType("application/json");
+
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("poll_for_proposal_completed")) {
+                        Long proposalID;
+                        try {
+                            proposalID = Long.valueOf(req.getParameter("proposal_id"));
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Integer");
+                        }
+
+                        JSONObject obj = new JSONObject();
+
+                        Proposal proposal = findProposal(proposalID);
+
+                        if (proposal == null) {
+                            CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
+                            if (completedTransaction != null) {
+                                obj.put("status", "complete");
+                                obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
+
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
+                                byte[] serialized = stream.toByteArray();
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                            } else {
+                                obj.put("status", "not_found");
+                            }
+                        } else {
+                            synchronized(proposal) {
+                                if (!proposal.isFinalized) {
+                                    proposal.wait(MaxPollTime);
                                 }
+                            }
 
-                                byte[] inputScriptBytes = Hex.decode((String)jsonSignatureObject.get("input_script"));
+                            if (proposal.isFinalized && proposal.isBroadcast) {
+                                obj.put("status", "complete");
+                                obj.put("tx_hash", proposal.getTransaction().getHash().toString());
 
-                                Script bitcoinJInputScript = newScript(inputScriptBytes);
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
 
-                                OutpointWithValue outpoint = offer.getOfferedOutpoints().get(offer_outpoint_index);
+                                proposal.getTransaction().bitcoinSerializeToStream(stream);
 
-                                Script connected_script = outpoint.getScript();
+                                byte[] serialized = stream.toByteArray();
 
-                                try {
-                                    if (!IsCanonicalSignature(bitcoinJInputScript)) {
-                                        throw new ScriptException("IsCanonicalSignature() returned false");
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                            } else {
+                                obj.put("status", "waiting");
+                                obj.put("signatures_required", proposal.getNSignaturesNeeded());
+                                obj.put("signatures_submitted", proposal.getNSigned());
+                            }
+                        }
+
+                        res.setContentType("application/json");
+
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("submit_signatures")) {
+                        Long proposalID;
+                        try {
+                            proposalID = Long.valueOf(req.getParameter("proposal_id"));
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Integer");
+                        }
+
+                        Long offerID;
+                        try {
+                            offerID = Long.valueOf(req.getParameter("offer_id"));
+                        } catch (Exception e) {
+                            throw new Exception("Invalid Integer");
+                        }
+
+                        final Proposal proposal = findProposal(proposalID);
+
+                        JSONObject obj = new JSONObject();
+
+                        if (proposal == null) {
+                            CompletedTransaction completedTransaction = findCompletedTransactionByProposalID(proposalID);
+                            if (completedTransaction != null) {
+                                obj.put("status", "complete");
+                                obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
+
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
+                                byte[] serialized = stream.toByteArray();
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                            } else {
+                                obj.put("status", "not_found");
+                            }
+                        } else {
+                            Offer offer = proposal.findOffer(offerID);
+
+                            if (offer == null) {
+                                obj.put("status", "not_found");
+                            } else if (proposal.isFinalized) {
+                                obj.put("status", "complete");
+                                obj.put("tx_hash", proposal.getTransaction().getHash().toString());
+
+                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
+
+                                proposal.getTransaction().bitcoinSerializeToStream(stream);
+
+                                byte[] serialized = stream.toByteArray();
+
+                                obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+                            } else {
+                                JSONArray jsonSignaturesArray = (JSONArray) new JSONParser().parse(req.getParameter("input_scripts"));
+
+                                boolean allSigned = false;
+                                for (Object _jsonSignatureObject : jsonSignaturesArray) {
+                                    JSONObject jsonSignatureObject = (JSONObject)_jsonSignatureObject;
+
+                                    int tx_input_index;
+                                    try {
+                                        tx_input_index = Integer.valueOf(jsonSignatureObject.get("tx_input_index").toString());
+                                    } catch (Exception e) {
+                                        throw new Exception("Invalid Integer");
                                     }
 
-                                    bitcoinJInputScript.correctlySpends(proposal.getTransaction(), tx_input_index, connected_script, true);
+                                    int offer_outpoint_index;
+                                    try {
+                                        offer_outpoint_index = Integer.valueOf(jsonSignatureObject.get("offer_outpoint_index").toString());
+                                    } catch (Exception e) {
+                                        throw new Exception("Invalid Integer");
+                                    }
 
-                                    proposal.input_scripts.put(tx_input_index, bitcoinJInputScript);
+                                    byte[] inputScriptBytes = Hex.decode((String)jsonSignatureObject.get("input_script"));
 
-                                    allSigned = true;
-                                } catch (ScriptException e) {
-                                    e.printStackTrace();
+                                    Script bitcoinJInputScript = newScript(inputScriptBytes);
 
-                                    allSigned = false;
+                                    OutpointWithValue outpoint = offer.getOfferedOutpoints().get(offer_outpoint_index);
 
-                                    obj.put("status", "verification_failed");
+                                    Script connected_script = outpoint.getScript();
 
-                                    break;
+                                    try {
+                                        if (!IsCanonicalSignature(bitcoinJInputScript)) {
+                                            throw new ScriptException("IsCanonicalSignature() returned false");
+                                        }
+
+                                        bitcoinJInputScript.correctlySpends(proposal.getTransaction(), tx_input_index, connected_script, true);
+
+                                        proposal.input_scripts.put(tx_input_index, bitcoinJInputScript);
+
+                                        allSigned = true;
+                                    } catch (ScriptException e) {
+                                        e.printStackTrace();
+
+                                        allSigned = false;
+
+                                        obj.put("status", "verification_failed");
+
+                                        break;
+                                    }
+                                }
+
+                                if (allSigned) {
+                                    obj.put("status", "signatures_accepted");
+                                }
+
+                                if (proposal.getNSigned() == proposal.getNSignaturesNeeded()) {
+                                    multiThreadExec.execute(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            try {
+                                                synchronized (proposal) {
+                                                    proposal.finalizeTransaction();
+
+                                                    proposal.pushTransaction();
+                                                }
+                                            } catch (Exception e) {
+                                                Logger.log(Logger.SeveritySeriousError, e);
+                                            }
+                                        }
+                                    });
                                 }
                             }
+                        }
 
-                            if (allSigned) {
-                                obj.put("status", "signatures_accepted");
-                            }
+                        res.setContentType("application/json");
 
+                        res.getWriter().print(obj.toJSONString());
+                    } else if (method.equals("create_proposals")) {
+                        runCreateProposals();
+
+                        res.sendRedirect("/");
+                    } else if (method.equals("finalize_and_push_signed")) {
+                        for (final Proposal proposal : activeProposals.values()) {
                             if (proposal.getNSigned() == proposal.getNSignaturesNeeded()) {
                                 multiThreadExec.execute(new Runnable() {
                                     @Override
@@ -3301,53 +3460,38 @@ public class SharedCoin extends HttpServlet {
                                 });
                             }
                         }
+
+                        res.sendRedirect("/home");
+                    }  else {
+                        throw new Exception("Unknown Method");
                     }
-
-                    res.setContentType("application/json");
-
-                    res.getWriter().print(obj.toJSONString());
-                } else if (method.equals("create_proposals")) {
-                    runCreateProposals();
-
-                    res.sendRedirect("/");
-                } else if (method.equals("finalize_and_push_signed")) {
-                    for (final Proposal proposal : activeProposals.values()) {
-                        if (proposal.getNSigned() == proposal.getNSignaturesNeeded()) {
-                            multiThreadExec.execute(new Runnable() {
-                                @Override
-                                public void run() {
-                                    try {
-                                        synchronized (proposal) {
-                                            proposal.finalizeTransaction();
-
-                                            proposal.pushTransaction();
-                                        }
-                                    } catch (Exception e) {
-                                        Logger.log(Logger.SeveritySeriousError, e);
-                                    }
-                                }
-                            });
-                        }
-                    }
-
-                    res.sendRedirect("/home");
-                }  else {
-                    throw new Exception("Unknown Method");
+                } else {
+                    throw new Exception("No Method Provided");
                 }
-            } else {
-                throw new Exception("No Method Provided");
+            } catch (Exception e) {
+                Logger.log(Logger.SeverityWARN, e);
+
+                res.setStatus(500);
+
+                res.setContentType("text/plain");
+
+                if (e.getLocalizedMessage() == null)
+                    res.getWriter().print("Unknown Error Message");
+                else
+                    res.getWriter().print(e.getLocalizedMessage());
+
+                throw e;
+            } finally {
+                container.didFinishRequest(res);
             }
         } catch (Exception e) {
-            Logger.log(Logger.SeverityWARN, e);
+            List<DOSManager.RequestContainer> requests = DOSManager.getRequestList(req);
 
-            res.setStatus(500);
-
-            res.setContentType("text/plain");
-
-            if (e.getLocalizedMessage() == null)
-                res.getWriter().print("Unknown Error Message");
-            else
-                res.getWriter().print(e.getLocalizedMessage());
+            if (requests != null) {
+                for (DOSManager.RequestContainer requestContainer : requests) {
+                    Logger.log(Logger.SeverityWARN, requestContainer);
+                }
+            }
         }
     }
 }

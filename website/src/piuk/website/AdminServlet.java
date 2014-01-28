@@ -1,9 +1,16 @@
 package piuk.website;
 
+import com.google.bitcoin.core.Base58;
+import com.google.bitcoin.core.ECKey;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringEscapeUtils;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
 import piuk.MyRemoteWallet;
 import piuk.MyTransactionOutPoint;
+import piuk.Util;
+import piuk.common.Pair;
 
 import javax.servlet.ServletException;
 import javax.servlet.annotation.WebServlet;
@@ -12,7 +19,11 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.*;
+import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Collections;
+import java.util.Map;
 
 @WebServlet({"/sharedcoin-admin"})
 public class AdminServlet extends HttpServlet {
@@ -97,6 +108,108 @@ public class AdminServlet extends HttpServlet {
         }
     }
 
+    public static ECKey decodeBase58PK(String base58Priv) throws Exception {
+        byte[] privBytes = Base58.decode(base58Priv);
+
+        // Prppend a zero byte to make the biginteger unsigned
+        byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
+
+        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
+
+        return ecKey;
+    }
+
+    public static void handleResults(List<Pair<String, String>> results) throws Exception {
+        StringBuffer params = new StringBuffer("api_code=f43d31ea-5b02-4a5c-b4dd-2f108cd81ba6&simple=true&active=");
+        for (Pair<String, String> pair : results) {
+            params.append(pair.getFirst() + "|");
+        }
+        params.deleteCharAt(params.length()-1);
+
+        String response = Util.postURL("https://blockchain.info/multiaddr", params.toString(), null);
+
+        Map<String, JSONObject> obj = (JSONObject) new JSONParser().parse(response);
+
+        for (Map.Entry<String, JSONObject> entry : obj.entrySet()) {
+            long final_balance = Long.valueOf(entry.getValue().get("final_balance").toString());
+            if (final_balance > 0) {
+
+                System.out.println("Final Balance " + final_balance + " address " + entry.getKey());
+
+                final String address = entry.getKey();
+                String key = null;
+
+                for (Pair<String, String> pair : results) {
+                    if (pair.getFirst().equals(address)) {
+                        key = pair.getSecond();
+                        break;
+                    }
+                }
+
+                if (key == null) {
+                    throw new Exception("Key null address " + address);
+                }
+
+                ECKey ecKey = decodeBase58PK(key);
+
+                if (!SharedCoin.ourWallet.addECKey(address, ecKey))
+                    throw new Exception("Error Importing ECKey");
+
+            }
+        }
+    }
+
+    private static void checkDeletedPrivateKeysLog() throws Exception {
+        List<Pair<String, String>> keys = new ArrayList<>();
+
+        File file = new File(DeletedPrivateKeysLogFilePath);
+
+        FileInputStream fstream = new FileInputStream(file);
+        BufferedReader br = new BufferedReader(new InputStreamReader(fstream));
+
+        int lineCount = 0;
+        while (br.readLine() != null)   {
+            ++lineCount;
+        }
+        System.out.println("Line count " + lineCount);
+
+        fstream = new FileInputStream(file);
+        br = new BufferedReader(new InputStreamReader(fstream));
+
+        String strLine;
+
+        int line = 0;
+        while ((strLine = br.readLine()) != null)   {
+            String[] components = strLine.split(" ");
+
+            if (components.length == 2) {
+                keys.add(new Pair<>(components[0], components[1]));
+            }
+
+            ++line;
+        }
+        br.close();
+
+        Collections.reverse(keys);
+
+        List<Pair<String, String>> keysTmp = new ArrayList<>();
+        int ii = 0;
+        for (Pair<String, String> addressKeyPair : keys) {
+            keysTmp.add(addressKeyPair);
+
+            if (keysTmp.size() == 1000 || ii == keysTmp.size()-1) {
+
+                System.out.println("Handle Results " + ii);
+
+                handleResults(keysTmp);
+
+                keysTmp.clear();
+            }
+
+            ++ii;
+        }
+    }
+
     @Override
     protected void doGet(HttpServletRequest req, final HttpServletResponse res) throws ServletException, IOException {
 
@@ -124,6 +237,7 @@ public class AdminServlet extends HttpServlet {
                 res.sendRedirect("/sharedcoin-admin");
             } else if (method.equals("threads")) {
                 res.setContentType("text/plain");
+
 
                 res.getWriter().print("Threads \n\n");
 
@@ -215,11 +329,26 @@ public class AdminServlet extends HttpServlet {
                 } else if (method.equals("divide_large_outputs")) {
                     SharedCoin.ourWallet.divideLargeOutputs();
                 } else if (method.equals("print_unspent")) {
-                   List<MyTransactionOutPoint> outputs = SharedCoin.ourWallet.getUnspentOutputs(1000);
+                    List<MyTransactionOutPoint> outputs = SharedCoin.ourWallet.getUnspentOutputs(1000);
 
                     res.getWriter().println("Size : " + outputs.size());
 
                     res.getWriter().print(outputs);
+                } else if (method.equals("check_deleted_private_keys_log")) {
+
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                checkDeletedPrivateKeysLog();
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }).start();
+
+
+                    res.sendRedirect("/sharedcoin-admin");
                 } else {
                     throw new Exception("Unknown Method");
                 }

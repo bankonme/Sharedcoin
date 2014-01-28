@@ -52,6 +52,11 @@
         <button class="btn btn-secondary" name="submit" value="true">Print Unspent Outputs</button>
     </form>
 
+    <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
+        <input type="hidden" value="check_deleted_private_keys_log" name="method">
+        <button class="btn btn-secondary" name="submit" value="true">Check Delete Private Keys Log</button>
+    </form>
+
     <p>
         <a href="/sharedcoin-admin?method=threads">View Threads</a>
     </p>

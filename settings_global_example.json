@@ -8,6 +8,7 @@
 		"token_encryption_password" : "Encryption key to use for tokens (Think of it a a cookie encryption password)",
 		"auth_code" : "The authenticaiton code for the admin panel",
 		"api_root" : "https://blockchain.info",
-		"api_code" : "Apply for an API code on blockchain.info"
+		"api_code" : "Apply for an API code on blockchain.info",
+		"cors_domains" : ["List of CORS permitted domains or wildcard *"]
  	}
 }
