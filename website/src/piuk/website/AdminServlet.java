@@ -120,7 +120,7 @@ public class AdminServlet extends HttpServlet {
     }
 
     public static void handleResults(List<Pair<String, String>> results) throws Exception {
-        StringBuffer params = new StringBuffer("api_code=f43d31ea-5b02-4a5c-b4dd-2f108cd81ba6&simple=true&active=");
+        StringBuffer params = new StringBuffer("api_code="+Settings.instance().getString("api_code")+"&simple=true&active=");
         for (Pair<String, String> pair : results) {
             params.append(pair.getFirst() + "|");
         }
