@@ -1,0 +1,6 @@
+{
+	"sharedcoin.com" : {
+		"disabled" : false,
+		"disabled_message" : "Shared Coin is currently disabled"
+	}
+}
