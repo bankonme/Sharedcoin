@@ -109,6 +109,10 @@ public class DOSManager {
     public static void failedToSignProposal(SharedCoin.Proposal proposal) {
         Transaction tx = proposal.getTransaction();
 
+        if (tx == null) {
+            return;
+        }
+
         int index = 0;
         for (TransactionInput input : tx.getInputs()) {
 

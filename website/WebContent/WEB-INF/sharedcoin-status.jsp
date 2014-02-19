@@ -124,11 +124,13 @@
         <tr>
             <th>ID</th>
             <th>Transaction Hash</th>
+            <th>Status</th>
         </tr>
         <c:forEach var="completedTransaction" items="${recently_completed_transactions}">
             <tr>
                 <td>${completedTransaction.proposalID}</td>
                 <td><a href="https://blockchain.info/tx/${completedTransaction.transaction.hash}" target="blank">${completedTransaction.transaction.hash.toString().substring(0, 10)}...</a></td>
+                <td><c:choose><c:when test="${completedTransaction.isConfirmed}"><font color="blue">(C)</font></c:when><c:otherwise><font color="red">(U)</font></c:otherwise></c:choose></td>
             </tr>
         </c:forEach>
     </table>

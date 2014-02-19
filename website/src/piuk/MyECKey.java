@@ -2,8 +2,6 @@ package piuk;
 
 import com.google.bitcoin.core.*;
 
-import java.math.BigInteger;
-
 public class MyECKey extends ECKey {
 	private static final long serialVersionUID = 1L;
 	protected final String addr;
@@ -35,7 +33,7 @@ public class MyECKey extends ECKey {
 	}
 
 	public MyECKey(String addr, String base58, MyWallet wallet) throws Exception {
-		super((BigInteger)null, null);
+		super(null, null);
 
 		this.addr = addr;
 		this.base58 = base58;

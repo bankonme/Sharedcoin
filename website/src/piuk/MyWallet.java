@@ -379,7 +379,7 @@ public class MyWallet {
         Map<String, Object> key = this.findKey(address);
 
         if (key == null) {
-            throw new Exception("Key not found");
+            throw new Exception("Key not found " + address);
         }
 
         String base58Priv = (String) key.get("priv");

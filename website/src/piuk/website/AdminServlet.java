@@ -95,7 +95,6 @@ public class AdminServlet extends HttpServlet {
     }
 
     public static boolean isAuthorized(HttpServletRequest req) {
-
         HttpSession session = req.getSession(true);
         String code = req.getParameter("code");
         if (session.getAttribute("authorized") != null && session.getAttribute("authorized").equals("true")) {
@@ -111,7 +110,7 @@ public class AdminServlet extends HttpServlet {
     public static ECKey decodeBase58PK(String base58Priv) throws Exception {
         byte[] privBytes = Base58.decode(base58Priv);
 
-        // Prppend a zero byte to make the biginteger unsigned
+        // Prepend a zero byte to make the biginteger unsigned
         byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
 
         ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
@@ -126,7 +125,7 @@ public class AdminServlet extends HttpServlet {
         }
         params.deleteCharAt(params.length()-1);
 
-        String response = Util.postURL("https://blockchain.info/multiaddr", params.toString(), null);
+        String response = Util.postURL(Settings.instance().getString("api_root") + "multiaddr", params.toString(), null);
 
         Map<String, JSONObject> obj = (JSONObject) new JSONParser().parse(response);
 
