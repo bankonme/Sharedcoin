@@ -120,6 +120,8 @@ public class SharedCoin extends HttpServlet {
         Transaction transaction;
         boolean isConfirmedBroadcastSuccessfully = false;
         boolean isConfirmed = false;
+        boolean isDoubleSpend = false;
+
         long lastCheckedConfirmed = 0;
         long completedTime;
         int pushCount = 0;
@@ -186,6 +188,10 @@ public class SharedCoin extends HttpServlet {
             }
 
             if (!isConfirmedBroadcastSuccessfully) {
+                return false;
+            }
+
+            if (isDoubleSpend) {
                 return false;
             }
 
@@ -715,25 +721,48 @@ public class SharedCoin extends HttpServlet {
                     e.printStackTrace();
                 }
 
-                String[] allAddresses = wallet.getActiveAddresses();
+                String[] allActiveAddresses = wallet.getActiveAddresses();
 
-                if (allAddresses.length > MaxActiveAddresses) {
-                    Logger.log(Logger.SeverityWARN, "Tidy Wallet: Too Many Active Addresses " + allAddresses.length + " new addresses");
+                if (allActiveAddresses.length > MaxActiveAddresses) {
+                    Logger.log(Logger.SeverityWARN, "Tidy Wallet: Too Many Active Addresses " + allActiveAddresses.length + " new addresses");
 
-                    for (int ii = MaxActiveAddresses-1; ii < allAddresses.length; ++ii) {
+                    {
+                        int nToArchive = allActiveAddresses.length - MaxActiveAddresses;
+                        int ii = 0;
+                        for (String address : allActiveAddresses) {
+                            if (ii >= nToArchive) {
+                                break;
+                            }
 
-                        String address = allAddresses[ii];
+                            BigInteger balance = wallet.getBalance(address);
 
-                        //Logger.log(Logger.SeverityWARN, "Tidy Wallet: Archive " + address);
+                            if (balance.compareTo(BigInteger.ZERO) == 0) {
+                                wallet.setTag(address, 2);
 
-                        wallet.setTag(address, 2);
+                                didModify = true;
 
-                        didModify = true;
+                                ++ii;
+                            }
+                        }
                     }
 
+                    allActiveAddresses = wallet.getActiveAddresses();
+
+                    if (allActiveAddresses.length > MaxActiveAddresses) {
+                        Logger.log(Logger.SeverityWARN, "Tidy Wallet: Still Too Many Active Addresses " + allActiveAddresses.length + " new addresses");
+
+                        for (int ii = MaxActiveAddresses-1; ii < allActiveAddresses.length; ++ii) {
+                            String address = allActiveAddresses[ii];
+
+                            wallet.setTag(address, 2);
+
+                            didModify = true;
+                        }
+
+                    }
                 } else {
                     //Generate New Addresses To Fill the wallet
-                    int nAddressToCreate = TargetNumberActiveAddresses - allAddresses.length;
+                    int nAddressToCreate = TargetNumberActiveAddresses - allActiveAddresses.length;
 
                     //Logger.log(Logger.SeverityWARN, "Tidy Wallet: Generate " + nAddressToCreate + " new addresses");
 
@@ -975,9 +1004,7 @@ public class SharedCoin extends HttpServlet {
                         throw new Exception("Null Transaction");
                     }
 
-                    if (transaction.getHeight() == 0 && transaction.isDouble_spend()) {
-                        throw new Exception("Transaction Is Double Spend");
-                    }
+                    completedTransaction.isDoubleSpend = transaction.isDouble_spend();
 
                     completedTransaction.isConfirmedBroadcastSuccessfully = true;
 
