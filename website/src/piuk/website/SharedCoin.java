@@ -46,7 +46,7 @@ public class SharedCoin extends HttpServlet {
     private static long lastPushedTransactionTime = 0;
     private static final long MinimumOutputValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
-    private static final long MinimumNoneStandardOutputValue = 5430;
+    private static final long MinimumNoneStandardOutputValue = 5460;
     private static final long MinimumOutputValueExcludeFee = MinimumNoneStandardOutputValue;
 
     private static final long MaximumHardTransactionSize = 100; //100KB
@@ -813,63 +813,6 @@ public class SharedCoin extends HttpServlet {
         return new Script(NetworkParameters.prodNet(), bytes, 0, bytes.length);
     }
 
-    public static boolean IsCanonicalSignature(Script inputScript) throws ScriptException {
-        return IsCanonicalSignature(inputScript.getSignature());
-    }
-
-    public static boolean IsCanonicalSignature(byte[] vchSig) throws ScriptException {
-
-        int SIGHASH_ALL = 1;
-        int SIGHASH_NONE = 2;
-        int SIGHASH_SINGLE = 3;
-        int SIGHASH_ANYONECANPAY = 80;
-
-        if (vchSig.length < 9)
-            throw new ScriptException("Non-canonical signature: too short");
-        if (vchSig.length > 73)
-            throw new ScriptException("Non-canonical signature: too long");
-        int nHashType = vchSig[vchSig.length - 1];
-        if (nHashType != SIGHASH_ALL && nHashType != SIGHASH_NONE && nHashType != SIGHASH_SINGLE && nHashType != SIGHASH_ANYONECANPAY)
-            throw new ScriptException("Non-canonical signature: unknown hashtype byte " + nHashType);
-        if (vchSig[0] != 0x30)
-            throw new ScriptException("Non-canonical signature: wrong type");
-        if (vchSig[1] != vchSig.length - 3)
-            throw new ScriptException("Non-canonical signature: wrong length marker");
-        int nLenR = vchSig[3];
-        if (5 + nLenR >= vchSig.length)
-            throw new ScriptException("Non-canonical signature: S length misplaced");
-        int nLenS = vchSig[5 + nLenR];
-        if (nLenR + nLenS + 7 != vchSig.length)
-            throw new ScriptException("Non-canonical signature: R+S length mismatch");
-
-        {
-            int n = 4;
-            if (vchSig[n - 2] != 0x02)
-                throw new ScriptException("Non-canonical signature: R value type mismatch");
-            if (nLenR == 0)
-                throw new ScriptException("Non-canonical signature: R length is zero");
-            if ((vchSig[n + 0] & 0x80) > 0)
-                throw new ScriptException("Non-canonical signature: R value negative");
-            if (nLenR > 1 && (vchSig[n + 0] == 0x00) && (vchSig[n + 1] & 0x80) == 0)
-                throw new ScriptException("Non-canonical signature: R value excessively padded");
-        }
-
-        {
-            int n = 6 + nLenR;
-            if (vchSig[n - 2] != 0x02)
-                throw new ScriptException("Non-canonical signature: S value type mismatch");
-            if (nLenS == 0)
-                throw new ScriptException("Non-canonical signature: S length is zero");
-            if ((vchSig[n + 0] & 0x80) > 0)
-                throw new ScriptException("Non-canonical signature: S value negative");
-            if (nLenS > 1 && (vchSig[n + 0] == 0x00) && (vchSig[n + 1] & 0x80) == 0)
-                throw new ScriptException("Non-canonical signature: S value excessively padded");
-        }
-
-        return true;
-    }
-
-
     public void addOfferToPending(Offer offer) throws Exception {
         Lock lock = modifyPendingOffersLock.writeLock();
 
@@ -1030,6 +973,10 @@ public class SharedCoin extends HttpServlet {
 
                     if (transaction == null) {
                         throw new Exception("Null Transaction");
+                    }
+
+                    if (transaction.getHeight() == 0 && transaction.isDouble_spend()) {
+                        throw new Exception("Transaction Is Double Spend");
                     }
 
                     completedTransaction.isConfirmedBroadcastSuccessfully = true;
@@ -3663,8 +3610,18 @@ public class SharedCoin extends HttpServlet {
                                     Script connected_script = outpoint.getScript();
 
                                     try {
-                                        if (!IsCanonicalSignature(bitcoinJInputScript)) {
+                                        if (!BitcoinScript.IsCanonicalSignature(bitcoinJInputScript.getSignature())) {
                                             throw new ScriptException("IsCanonicalSignature() returned false");
+                                        }
+
+                                        BitcoinScript inputBitcoinScript = new BitcoinScript(inputScriptBytes);
+
+                                        if (!inputBitcoinScript.IsPushOnly()) {
+                                            throw new ScriptException("IsPushOnly() returned false");
+                                        }
+
+                                        if (!inputBitcoinScript.HasCanonicalPushes()) {
+                                            throw new ScriptException("HasCanonicalPushes() returned false");
                                         }
 
                                         bitcoinJInputScript.correctlySpends(proposal.getTransaction(), tx_input_index, connected_script, true);
