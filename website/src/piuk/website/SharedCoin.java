@@ -55,7 +55,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxPollTime = 5000;
 
     private static final double DefaultFeePercent = 0.0; //Per rep
-    private static final long MinimumFee = (long) (COIN * 0.0001); //At this point transaction fees start costing more
+    private static final long MinimumFee = (long) (COIN * 0.0005); //At this point transaction fees start costing more
 
     private static final long HardErrorMaximumOutputValue = COIN * 55; //55 BTC
     private static final long MaximumOutputValue = COIN * 50; //50 BTC
@@ -3059,8 +3059,27 @@ public class SharedCoin extends HttpServlet {
                                 }
                             }
 
+                            double tokenFeePercent = token.fee_percent;
+
+                            String userFeePercentString = req.getParameter("fee_percent");
+
+                            if (userFeePercentString != null) {
+                                try {
+                                    double userFeePercent = Double.valueOf(userFeePercentString);
+
+                                    if (userFeePercent < tokenFeePercent) {
+                                        throw new Exception("Fee Percentage Less Than Minimum");
+                                    }
+
+                                    offer.feePercent = userFeePercent;
+                                } catch (Exception e) {
+                                    throw new Exception("Invalid Numerical Value");
+                                }
+                            } else {
+                                offer.feePercent = tokenFeePercent;
+                            }
+
                             offer.token = token;
-                            offer.feePercent = token.fee_percent;
                         } else {
                             offer.feePercent = feePercentForRequest(req);
                         }
@@ -3260,7 +3279,6 @@ public class SharedCoin extends HttpServlet {
                         }
 
                         long expectedFee = offer.calculateFeeExpected();
-
                         if (version >= 2) {
                             expectedFee = Math.max(expectedFee, MinimumFee);
                         }
