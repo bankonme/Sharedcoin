@@ -41,7 +41,9 @@ method = The method or action to perform (see below)
 ### Methods
 
 get_info
-	No Parameters
+
+	Parameters
+		No Parameters
 
 submit_offer
 	
