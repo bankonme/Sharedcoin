@@ -44,15 +44,16 @@ get_info
 	No Parameters
 
 submit_offer
-	offer = a JSON encoded offer object
-	token = A token from retrieved from get_info
-	fee_percent = Requested fee percent. Can only be higher than fee percent retreived from get_info.
-	offer_max_age = (Optional) Maximum time in milliseconds the client is willing to wait for an offer to be executed by the server.
+		offer = a JSON encoded offer object
+		token = A token from retrieved from get_info
+		fee_percent = Requested fee percent. Can only be higher than fee percent retreived from get_info.
+		offer_max_age = (Optional) Maximum time in milliseconds the client is willing to wait for an offer to be executed by the server.
 
-	Returns a JSON object containing an Offer ID
+	Returns
+		 A JSON object containing an Offer ID
 
 get_offer_id
-	offer_id = An offer ID retreived from submit_offer
+		offer_id = An offer ID retreived from submit_offer
 
 	Returns a status object 
 		"waiting" = means to retry the request
@@ -60,17 +61,17 @@ get_offer_id
 		"active_proposal" = An active proposal has been found. The object will also contain a proposal_id for the next stage.
 
 get_proposal_id
-	proposal_id = The proposal ID from get_offer_id
-	offer_id = The Offer ID from submit_offer
+		proposal_id = The proposal ID from get_offer_id
+		offer_id = The Offer ID from submit_offer
 
 	Returns a status object 
 		"completed" = The Proposal has already been completed. A tx_hash & tx will be returned.
 		"signatures_needed" = The client is required to submit a number of signatures by signing the attached tx data.
 
 submit_signatures
-	proposal_id = The proposal ID from get_offer_id
-	offer_id = The Offer ID from submit_offer
-	input_scripts = A number of JSON encoded signature scripts
+		proposal_id = The proposal ID from get_offer_id
+		offer_id = The Offer ID from submit_offer
+		input_scripts = A number of JSON encoded signature scripts
 
 	Returns a status object 
 		"not_found" = Proposal ID was not recognised. Resubmit the current offer.
@@ -79,7 +80,7 @@ submit_signatures
 		"signatures_accepted" = All good. Proceed to poll_for_proposal_completed.
 
 poll_for_proposal_completed
-	proposal_id = The proposal ID from get_offer_id 
+		proposal_id = The proposal ID from get_offer_id 
 
 	Returns a status object 
 		"waiting" = means to retry the request
