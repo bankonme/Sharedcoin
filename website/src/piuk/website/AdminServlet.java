@@ -438,6 +438,8 @@ public class AdminServlet extends HttpServlet {
                     res.sendRedirect("/sharedcoin-admin");
                 } else if (method.equals("toggle_info_log")) {
                     Logger.logInfo = !Logger.logInfo;
+                }  else if (method.equals("reload_settings")) {
+                    Settings.reloadSettings();
                 } else {
                     throw new Exception("Unknown Method");
                 }

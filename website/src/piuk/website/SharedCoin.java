@@ -82,10 +82,8 @@ public class SharedCoin extends HttpServlet {
     private static final long ProtocolVersion = 3;
     private static final long MinSupportedVersion = 2;
 
-    private static final long TargetNumberOfOutputs = 15; //The number of outputs to aim for in a single transaction
     private static final long MinNumberOfOutputs = 3; //The number of outputs to aim for in a single transaction including change outputs
     private static final long MaxNumberOfOutputsIncludingChange = 40; //The number of outputs to aim for in a single transaction including change outputs
-    private static final long TargetMaxNumberOfInputs = 25; //The soft max number of inputs to use for in a single transaction
     private static final long MaxNumberOfInputs = 100; //The soft max number of inputs to use for in a single transaction
 
     private static final long ProposalExpiryTime = 240000; //4 Minutes
@@ -1099,6 +1097,7 @@ public class SharedCoin extends HttpServlet {
         return false;
     }
 
+
     public synchronized static void runCreateProposals() throws Exception {
         Lock lock = modifyPendingOffersLock.writeLock();
 
@@ -1119,11 +1118,15 @@ public class SharedCoin extends HttpServlet {
                         nInputs += offer.getOfferedOutpoints().size();
                         nOutputs += offer.getRequestedOutputs().size();
 
-                        if (nInputs >= TargetMaxNumberOfInputs) {
+                        if (nInputs >= Proposal.getTargets().get("number_of_inputs").longValue()) {
                             break;
                         }
 
-                        if (nOutputs >= TargetNumberOfOutputs) {
+                        if (nOutputs >= Proposal.getTargets().get("number_of_outputs").longValue()) {
+                            break;
+                        }
+
+                        if (proposal.getOffers().size() >= Proposal.getTargets().get("number_of_offers").longValue()) {
                             break;
                         }
 
@@ -1152,8 +1155,13 @@ public class SharedCoin extends HttpServlet {
                             inputTransactionHashes.addAll(offerInputTransactionHashes);
                         }
 
+                        boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
 
-                        if (DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP()) && proposal.getOffers().size() == 0) {
+                        if (!hasFailedToSign) {
+                            if (!proposal.addOffer(offer)) {
+                                throw new Exception("Error Adding Offer To Proposal");
+                            }
+                        } else if (proposal.getOffers().size() == 0) {
                             //We only allow IPs that have failed to sign to join a proposal on their own
                             //That way it doesn't affect other users
 
@@ -1163,9 +1171,7 @@ public class SharedCoin extends HttpServlet {
 
                             break;
                         } else {
-                            if (!proposal.addOffer(offer)) {
-                                throw new Exception("Error Adding Offer To Proposal");
-                            }
+                            continue;
                         }
                     }
                 }
@@ -1255,6 +1261,10 @@ public class SharedCoin extends HttpServlet {
         boolean isBroadcast = false;
 
         private final ReadWriteLock transactionLock = new ReentrantReadWriteLock();
+
+        public static Map<String, Number> getTargets() {
+            return (Map)Settings.instance().getMap("proposal_targets");
+        }
 
         public Transaction getTransaction() {
             Lock lock = transactionLock.readLock();
@@ -1724,7 +1734,7 @@ public class SharedCoin extends HttpServlet {
 
                     selectedBeans.add(outpoint);
 
-                    if (selectedBeans.size() > TargetMaxNumberOfInputs && !allowUnconfirmed) {
+                    if (selectedBeans.size() > Proposal.getTargets().get("number_of_inputs").longValue() && !allowUnconfirmed) {
                         break;
                     }
 
@@ -1981,7 +1991,7 @@ public class SharedCoin extends HttpServlet {
                         e.printStackTrace();
                     }
 
-                    if (getRequestedOutputCount() >= TargetNumberOfOutputs || getOfferedInputCount() >= TargetMaxNumberOfInputs) {
+                    if (getRequestedOutputCount() >= Proposal.getTargets().get("number_of_outputs").longValue() || getOfferedInputCount() >= Proposal.getTargets().get("number_of_inputs").longValue()) {
                         fullBreak = true;
                         break;
                     }
