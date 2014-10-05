@@ -76,6 +76,8 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxChangeSingleUnconfirmedInput = 50 * COIN;
     private static final long MaxChangeSingleConfirmedInput = 5 * COIN;
 
+    private static final long CombineDustMinimumOutputSize = MinimumNoneStandardOutputValue;
+
     private static final long ForceDivideLargeOutputSize = 50 * COIN;
     private static final long RandomDivideLargeOutputSize = 25 * COIN;
 
@@ -100,6 +102,7 @@ public class SharedCoin extends HttpServlet {
     public static final BigInteger TransactionFeePer1000Bytes = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
 
     private static boolean _scheduleDivideLargeOutputs = false;
+    private static boolean _scheduleCombineDust = true;
 
     public static final OurWallet ourWallet = new OurWallet();
 
@@ -613,6 +616,92 @@ public class SharedCoin extends HttpServlet {
         }
 
 
+        public void combineDust() throws Exception {
+            Lock lock = updateLock.writeLock();
+
+            lock.lock();
+            try{
+                //Do multiaddr
+                //Archive ZERO balance addresses with more than one transaction
+                //Delete archived addresses with transactions > 6 confirmations
+
+                MyRemoteWallet wallet = getWallet();
+
+                for (int ii = 0; ii < 2; ++ii) {
+                    try {
+                        wallet.doMultiAddr();
+
+                        break;
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                final List<String> toCombineAddresses = new ArrayList<>();
+
+                BigInteger value = BigInteger.ZERO;
+
+
+                boolean addedAddressForFee = false;
+                for (String address : wallet.getActiveAddresses()) {
+                    final BigInteger balance = wallet.getBalance(address);
+
+                    if (!addedAddressForFee && balance.compareTo(BigInteger.valueOf(COIN)) >= 0) {
+
+                        if (isAddressInUse(address)) {
+                            Logger.log(Logger.SeverityWARN, "Address in use");
+                            continue;
+                        }
+
+                        toCombineAddresses.add(address);
+
+                        addedAddressForFee = true;
+
+                        value = value.add(balance);
+
+                    } else if (balance.compareTo(BigInteger.ZERO) > 0 && balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0) {
+
+                        Logger.log(Logger.SeverityINFO, "Dust Address " + address + " " + balance);
+
+                        if (isAddressInUse(address)) {
+                            Logger.log(Logger.SeverityWARN, "Address in use");
+                            continue;
+                        }
+
+                        toCombineAddresses.add(address);
+
+                        value = value.add(balance);
+
+                        if (toCombineAddresses.size() > 10)
+                            break;
+                    }
+                }
+
+                if (toCombineAddresses.size() <= 2)
+                    return;
+
+                if (toCombineAddresses.size() >= 10)
+                    _scheduleCombineDust = true;
+
+                final BigInteger fee = TransactionFeePer1000Bytes.multiply(BigInteger.valueOf(Math.round(toCombineAddresses.size()/1.5)));
+
+
+                final String destination = getRandomAddressNoLock().toString();
+
+                Logger.log(Logger.SeverityWARN, "combineDust() Send From [" + toCombineAddresses + "] to destination " + destination);
+
+                if (wallet.send(toCombineAddresses.toArray(new String[] {}), destination, value.divide(BigInteger.valueOf(2)), fee)) {
+                    System.out.println("Combine Dust wallet.send returned true");
+                } else {
+                    System.out.println("Combine Dust wallet.send returned false");
+
+                }
+
+            } finally {
+                lock.unlock();
+            }
+        }
+
         public void divideLargeOutputs() throws Exception {
             Lock lock = updateLock.writeLock();
 
@@ -706,6 +795,10 @@ public class SharedCoin extends HttpServlet {
 
                         if (balance.compareTo(BigInteger.valueOf(ForceDivideLargeOutputSize)) >= 0) {
                             _scheduleDivideLargeOutputs = true;
+                        }
+
+                        if (balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0) {
+                            _scheduleCombineDust = true;
                         }
 
                         if (n_tx > 0 && balance.compareTo(BigInteger.ZERO) == 0 && !isAddressTargetOfAnActiveOutput(address)) {
@@ -942,6 +1035,11 @@ public class SharedCoin extends HttpServlet {
                                 if (_scheduleDivideLargeOutputs) {
                                     _scheduleDivideLargeOutputs = false;
                                     ourWallet.divideLargeOutputs();
+                                }
+
+                                if (_scheduleCombineDust) {
+                                    _scheduleCombineDust = false;
+                                    ourWallet.combineDust();
                                 }
 
                                 if (lastTidyTransactionTime != lastPushedTransactionTime) {

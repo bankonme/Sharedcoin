@@ -47,6 +47,11 @@
         <button class="btn btn-secondary" name="submit" value="true">Divide Large Outputs</button>
     </form>
 
+        <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
+            <input type="hidden" value="combine_dust" name="method">
+            <button class="btn btn-secondary" name="submit" value="true">Combine Dust</button>
+        </form>
+
     <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
         <input type="hidden" value="print_unspent" name="method">
         <button class="btn btn-secondary" name="submit" value="true">Print Unspent Outputs</button>

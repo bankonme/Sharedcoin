@@ -365,6 +365,8 @@ public class AdminServlet extends HttpServlet {
                     res.getWriter().print(remoteWallet.getFinal_balance());
                 } else if (method.equals("divide_large_outputs")) {
                     SharedCoin.ourWallet.divideLargeOutputs();
+                } else if (method.equals("combine_dust")) {
+                    SharedCoin.ourWallet.combineDust();
                 } else if (method.equals("print_unspent")) {
 
                     Lock lock = SharedCoin.ourWallet.updateLock.readLock();
