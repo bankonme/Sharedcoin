@@ -15,3 +15,4 @@ encryptsettings.sh
 .project
 .classpath
 *.iml
+database.db

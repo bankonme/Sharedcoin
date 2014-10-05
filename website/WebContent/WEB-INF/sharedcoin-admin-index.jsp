@@ -53,10 +53,19 @@
     </form>
 
     <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
+        <input type="hidden" value="check_seeded_private_keys" name="method">
+        <button class="btn btn-secondary" name="submit" value="true">Check Seeded Private Keys</button>
+    </form>
+
+    <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
         <input type="hidden" value="check_deleted_private_keys_log" name="method">
         <button class="btn btn-secondary" name="submit" value="true">Check Delete Private Keys Log</button>
     </form>
 
+    <form style="display:inline-block;margin:0px;" action="/sharedcoin-admin" method="POST">
+        <input type="hidden" value="toggle_info_log" name="method">
+        <button class="btn btn-secondary" name="submit" value="true">Toggle Info Logger</button>
+    </form>
     <p>
         <a href="/sharedcoin-admin?method=threads">View Threads</a>
     </p>

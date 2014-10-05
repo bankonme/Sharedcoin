@@ -270,13 +270,15 @@ public class MyRemoteWallet extends MyWallet {
 
     public static String postURL(String request, String urlParameters) throws Exception {
 
-        if (urlParameters.length() > 0)
+        if (urlParameters.length() > 0) {
             urlParameters += "&";
+        }
 
         urlParameters += "api_code="+ApiCode;
 
-        URL url = new URL(request);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        final URL url = new URL(request);
+
+        final HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         try {
             connection.setDoOutput(true);
             connection.setDoInput(true);

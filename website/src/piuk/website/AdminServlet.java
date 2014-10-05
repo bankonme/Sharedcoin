@@ -2,14 +2,14 @@ package piuk.website;
 
 import com.google.bitcoin.core.Base58;
 import com.google.bitcoin.core.ECKey;
+import com.google.bitcoin.core.NetworkParameters;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringEscapeUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
-import piuk.MyRemoteWallet;
-import piuk.MyTransactionOutPoint;
-import piuk.Util;
+import piuk.*;
 import piuk.common.Pair;
 
 import javax.servlet.ServletException;
@@ -21,9 +21,10 @@ import javax.servlet.http.HttpSession;
 import java.io.*;
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.Lock;
 
 @WebServlet({"/sharedcoin-admin"})
 public class AdminServlet extends HttpServlet {
@@ -133,6 +134,9 @@ public class AdminServlet extends HttpServlet {
             long final_balance = Long.valueOf(entry.getValue().get("final_balance").toString());
             if (final_balance > 0) {
 
+                if (SharedCoin.ourWallet.isOurAddress(entry.getKey()))
+                    continue;
+
                 System.out.println("Final Balance " + final_balance + " address " + entry.getKey());
 
                 final String address = entry.getKey();
@@ -155,6 +159,40 @@ public class AdminServlet extends HttpServlet {
                     throw new Exception("Error Importing ECKey");
 
             }
+        }
+    }
+
+    private static void checkSeededPrivateKeys() throws Exception {
+
+        int counter = readPKSeedCounter();
+
+        //Add some extras to check
+        counter += 100;
+
+        System.out.println("Seed Counter " + counter);
+
+        List<Pair<String, String>> keys = new ArrayList<>();
+
+        while(counter >= 0) {
+            ECKey key = SharedCoin.OurWallet.makeECKey(counter);
+
+            final String PKString = Base58.encode(key.getPrivKeyBytes());
+
+            final String addressUncompressed = key.toAddress(NetworkParameters.prodNet()).toString();
+
+            final String addressCompressed = key.toAddressCompressed(NetworkParameters.prodNet()).toString();
+
+            keys.add(new Pair<>(addressCompressed, PKString));
+
+            keys.add(new Pair<>(addressUncompressed, PKString));
+
+            if (keys.size() >= 999 || counter == 0) {
+                handleResults(keys);
+
+                keys.clear();
+            }
+
+            counter--;
         }
     }
 
@@ -328,12 +366,45 @@ public class AdminServlet extends HttpServlet {
                 } else if (method.equals("divide_large_outputs")) {
                     SharedCoin.ourWallet.divideLargeOutputs();
                 } else if (method.equals("print_unspent")) {
-                    List<MyTransactionOutPoint> outputs = SharedCoin.ourWallet.getUnspentOutputs(1000);
+
+                    Lock lock = SharedCoin.ourWallet.updateLock.readLock();
+
+                    List<MyTransactionOutPoint> outputs = null;
+
+                    lock.lock();
+                    try{
+                        MyWallet wallet = SharedCoin.ourWallet.getWallet();
+
+                        res.getWriter().println("Active Addresses: " + StringUtils.join(wallet.getActiveAddresses(), "|"));
+
+                        try {
+                            outputs = MyRemoteWallet.getUnspentOutputPoints(wallet.getActiveAddresses(), 0, 1000);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    } finally {
+                        lock.unlock();
+                    }
+
 
                     res.getWriter().println("Size : " + outputs.size());
 
-                    res.getWriter().print(outputs);
+
+                    long total = 0;
+                    for (MyTransactionOutPoint outPoint : outputs) {
+                        res.getWriter().println("Hash : " + outPoint.getTxHash() + " : " + outPoint.getTxOutputN());
+                        res.getWriter().println("Value : " + (outPoint.getValue().longValue() / (double) SharedCoin.COIN) + " BTC");
+                        res.getWriter().println("Confirmations : " + outPoint.getConfirmations());
+                        res.getWriter().println();
+
+                        total += outPoint.getValue().longValue();
+                    }
+
+                    res.getWriter().print("Total Value " + total);
+
                 } else if (method.equals("check_deleted_private_keys_log")) {
+
+                    System.out.println("Check Deleted Private Keys");
 
                     new Thread(new Runnable() {
                         @Override
@@ -348,9 +419,29 @@ public class AdminServlet extends HttpServlet {
 
 
                     res.sendRedirect("/sharedcoin-admin");
+                } else if (method.equals("check_seeded_private_keys")) {
+
+                    System.out.println("Check Seeded Private Keys");
+
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                checkSeededPrivateKeys();
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }).start();
+
+
+                    res.sendRedirect("/sharedcoin-admin");
+                } else if (method.equals("toggle_info_log")) {
+                    Logger.logInfo = !Logger.logInfo;
                 } else {
                     throw new Exception("Unknown Method");
                 }
+
             } else {
                 throw new Exception("No Method");
             }
