@@ -7,9 +7,14 @@
 		"pk_seed" : "Seed to use when generating private keys",
 		"token_encryption_password" : "Encryption key to use for tokens (Think of it a a cookie encryption password)",
 		"auth_code" : "The authenticaiton code for the admin panel",
-		"api_root" : "https://blockchain.info/",
+		"api_roots" : ["https://blockchain.info/"],
 		"api_code" : "Apply for an API code on blockchain.info",
 		"cloudflare_enabled" : true,
-		"cors_domains" : ["List of CORS permitted domains or wildcard *"]
+		"cors_domains" : ["List of CORS permitted domains or wildcard *"],
+		"proposal_targets" : {
+			"number_of_inputs" : 25,
+			"number_of_outputs" : 15,
+			"number_of_offers" : 2
+		}
  	}
 }
