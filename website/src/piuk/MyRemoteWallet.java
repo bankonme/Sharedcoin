@@ -41,8 +41,6 @@ import java.util.*;
 
 @SuppressWarnings("unchecked")
 public class MyRemoteWallet extends MyWallet {
-    private static final String WebROOT = Settings.instance().getString("api_root");
-    private static final String ApiCode = Settings.instance().getString("api_code");
 
     private String _checksum;
     private boolean _isNew = false;
@@ -57,6 +55,14 @@ public class MyRemoteWallet extends MyWallet {
     private double sharedFee;
     private List<MyTransaction> transactions = Collections.synchronizedList(new ArrayList<MyTransaction>());
     public byte[] extra_seed;
+
+    public static String getApiCode() {
+        return Settings.instance().getString("api_code");
+    }
+
+    public static List<String> getApiRoots() {
+        return (List)Settings.instance().getList("api_roots");
+    }
 
     public MyBlock getLatestBlock() {
         return latestBlock;
@@ -177,12 +183,33 @@ public class MyRemoteWallet extends MyWallet {
         this._isNew = false;
     }
 
+    public static String fetchAPI(String path) throws Exception {
+
+        final List<String> apiRoots = getApiRoots();
+
+        Exception _e = null;
+
+        for (String root : apiRoots) {
+            try {
+                return fetchURL(root + path);
+            } catch (Exception e) {
+                Logger.log(Logger.SeverityError, e);
+                _e = e;
+            }
+        }
+
+        if (_e != null)
+            throw _e;
+        else
+            throw new Exception("Shouldn't be here. apiRoots is empty?");
+    }
+
     private static String fetchURL(String URL) throws Exception {
 
         if (URL.indexOf("?") > 0) {
-            URL += "&api_code="+ApiCode;
+            URL += "&api_code="+getApiCode();
         } else {
-            URL += "?api_code="+ApiCode;
+            URL += "?api_code="+getApiCode();
         }
 
         URL url = new URL(URL);
@@ -268,13 +295,34 @@ public class MyRemoteWallet extends MyWallet {
     }
 
 
-    public static String postURL(String request, String urlParameters) throws Exception {
+    public static String postAPI(String path, String urlParameters) throws Exception {
+
+        final List<String> apiRoots = getApiRoots();
+
+        Exception _e = null;
+
+        for (String root : apiRoots) {
+            try {
+                return postURL(root + path, urlParameters);
+            } catch (Exception e) {
+                Logger.log(Logger.SeverityError, e);
+                _e = e;
+            }
+        }
+
+        if (_e != null)
+            throw _e;
+        else
+            throw new Exception("Shouldn't be here. apiRoots is empty?");
+    }
+
+    private static String postURL(String request, String urlParameters) throws Exception {
 
         if (urlParameters.length() > 0) {
             urlParameters += "&";
         }
 
-        urlParameters += "api_code="+ApiCode;
+        urlParameters += "api_code="+getApiCode();
 
         final URL url = new URL(request);
 
@@ -448,11 +496,11 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public synchronized String doMultiAddr() throws Exception {
-        String url =  WebROOT + "multiaddr";
+        String url = "multiaddr";
 
         String params = "active=" + StringUtils.join(getActiveAddresses(), "|");
 
-        String response = postURL(url, params);
+        String response = postAPI(url, params);
 
         parseMultiAddr(response);
 
@@ -463,11 +511,11 @@ public class MyRemoteWallet extends MyWallet {
 
 
     public static Map<String, Long> getMultiAddrBalances(String[] addresses) throws Exception {
-        String url =  WebROOT + "multiaddr";
+        String url =  "multiaddr";
 
         String params = "simple=true&active=" + StringUtils.join(addresses, "|");
 
-        String response = postURL(url, params);
+        String response = postAPI(url, params);
 
         Map<String, Object> top = (Map<String, Object>) JSONValue.parse(response);
 
@@ -482,11 +530,11 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static long getMinConfirmingBlockHeightForTransactionConfirmations(String addresses) throws Exception {
-        String url =  WebROOT + "multiaddr";
+        String url =  "multiaddr";
 
         String params = "active=" + addresses;
 
-        String response = postURL(url, params);
+        String response = postAPI(url, params);
 
         Map<String, Object> top = (Map<String, Object>) JSONValue.parse(response);
 
@@ -522,7 +570,7 @@ public class MyRemoteWallet extends MyWallet {
 
         String hexString = new String(Hex.encode(tx.bitcoinSerialize()));
 
-        postURL(WebROOT + "pushtx", "tx="+hexString);
+        postAPI("pushtx", "tx="+hexString);
 
         return true;
     }
@@ -618,17 +666,17 @@ public class MyRemoteWallet extends MyWallet {
 
 
     public static byte[] getScriptForOutpoint(int txIndex, int txOuputN) throws Exception {
-        StringBuffer buffer = new StringBuffer(WebROOT + "q/outscript?tx_index="+txIndex+"&tx_output_n="+txOuputN);
+        StringBuffer buffer = new StringBuffer("q/outscript?tx_index="+txIndex+"&tx_output_n="+txOuputN);
 
-        String response = fetchURL(buffer.toString());
+        String response = fetchAPI(buffer.toString());
 
         return Hex.decode(response);
     }
 
     public static MyTransaction getTransactionByHash(Hash hash, boolean scripts) throws Exception {
-        StringBuffer buffer =  new StringBuffer(WebROOT + "tx/"+hash+"?format=json&show_adv=true&scripts="+scripts);
+        StringBuffer buffer =  new StringBuffer("tx/"+hash+"?format=json&show_adv=true&scripts="+scripts);
 
-        String response = fetchURL(buffer.toString());
+        String response = fetchAPI(buffer.toString());
 
         Map<String, Object> root = (Map<String, Object>) JSONValue.parse(response);
 
@@ -637,7 +685,7 @@ public class MyRemoteWallet extends MyWallet {
 
     public static List<MyTransactionOutPoint> getUnspentOutputPoints(String[] from, int min_confirmations, int limit) throws Exception {
 
-        String rootURL = WebROOT + "unspent";
+        String rootURL = "unspent";
 
         StringBuffer params =  new StringBuffer("limit="+limit+"&confirmations="+min_confirmations+"&active=");
 
@@ -653,7 +701,7 @@ public class MyRemoteWallet extends MyWallet {
 
         List<MyTransactionOutPoint> outputs = new ArrayList<>();
 
-        String response = postURL(rootURL, params.toString());
+        String response = postAPI(rootURL, params.toString());
 
         Map<String, Object> root = (Map<String, Object>) JSONValue.parse(response);
 
@@ -699,7 +747,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&payload="+URLEncoder.encode(regId));
         args.append("&length="+regId.length());
 
-        String response = postURL(WebROOT + "wallet", args.toString());
+        String response = postAPI("wallet", args.toString());
 
         return response != null && response.length() > 0;
     }
@@ -719,7 +767,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&payload="+URLEncoder.encode(regId));
         args.append("&length="+regId.length());
 
-        String response = postURL(WebROOT + "wallet", args.toString());
+        String response = postAPI("wallet", args.toString());
 
         return response != null && response.length() > 0;
     }
@@ -733,7 +781,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&sharedKey=" + getSharedKey());
         args.append("&method=get-info");;
 
-        String response = postURL(WebROOT + "wallet", args.toString());
+        String response = postAPI("wallet", args.toString());
 
         return (JSONObject) new JSONParser().parse(response);
     }
@@ -749,7 +797,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&length=" + currency_code.length());
         args.append("&method=update-currency");;
 
-        String response = postURL(WebROOT + "wallet", args.toString());
+        String response = postAPI("wallet", args.toString());
 
         return response != null;
     }
@@ -765,11 +813,11 @@ public class MyRemoteWallet extends MyWallet {
         args.append("guid=" + guid);
         args.append("&method=pairing-encryption-password");
 
-        return postURL(WebROOT + "wallet", args.toString());
+        return postAPI("wallet", args.toString());
     }
 
     public static BigInteger getAddressBalance(final String address) throws Exception {
-        return new BigInteger(fetchURL(WebROOT + "q/addressbalance/"+address));
+        return new BigInteger(fetchAPI("q/addressbalance/"+address));
     }
 
     public static String getWalletManualPairing(final String guid) throws Exception {
@@ -778,7 +826,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("guid=" + guid);
         args.append("&method=pairing-encryption-password");
 
-        String response = fetchURL(WebROOT + "wallet/" + guid + "?format=json&resend_code=false");
+        String response = fetchAPI("wallet/" + guid + "?format=json&resend_code=false");
 
         JSONObject object = (JSONObject) new JSONParser().parse(response);
 
@@ -834,7 +882,7 @@ public class MyRemoteWallet extends MyWallet {
             args.append(old_checksum);
         }
 
-        postURL(WebROOT + "wallet", args.toString());
+        postAPI("wallet", args.toString());
 
         _isNew = false;
 
@@ -872,7 +920,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static String getWalletPayload(String guid, String sharedKey, String checkSumString) throws Exception {
-        String payload = fetchURL(WebROOT + "wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey+"&checksum="+checkSumString);
+        String payload = fetchAPI("wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey+"&checksum="+checkSumString);
 
         if (payload == null) {
             throw new Exception("Error downloading wallet");
@@ -886,7 +934,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static String getWalletPayload(String guid, String sharedKey) throws Exception {
-        String payload = fetchURL(WebROOT + "wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey);
+        String payload = fetchAPI("wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey);
 
         if (payload == null) {
             throw new Exception("Error downloading wallet");

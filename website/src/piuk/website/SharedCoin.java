@@ -3545,9 +3545,7 @@ public class SharedCoin extends HttpServlet {
                                 }
 
                                 proposal = findActiveProposalFromOffer(offer);
-                            }
-
-                            if (proposal.getTransaction() == null) {
+                            } else if (proposal.getTransaction() == null) {
                                 synchronized(proposal) {
                                     proposal.wait(MaxPollTime);
                                 }
