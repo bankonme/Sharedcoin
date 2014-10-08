@@ -1300,7 +1300,7 @@ public class SharedCoin extends HttpServlet {
                     }
 
                     //TODO recover if these fail
-                    proposal.constructTransaction();
+                    proposal.constructTransaction(allUnspentPreFilter);
 
                     //Finalize our offers
                     proposal.ourOffers = Collections.unmodifiableList(proposal.ourOffers);
@@ -2144,7 +2144,7 @@ public class SharedCoin extends HttpServlet {
             }
         }
 
-        public synchronized void constructTransaction() throws Exception {
+        public synchronized void constructTransaction(List<MyTransactionOutPoint> allUnspent) throws Exception {
 
             Transaction transaction = new Transaction(NetworkParameters.prodNet());
 
@@ -2393,9 +2393,6 @@ public class SharedCoin extends HttpServlet {
 
                 if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
                     Logger.log(Logger.SeverityWARN, "extraFeeNeeded + (" + extraFeeNeeded +") > 0");
-
-                    //We don't have enough funds to pay the fee
-                    List<MyTransactionOutPoint> allUnspent = ourWallet.getUnspentOutputs(1000);
 
                     //So we add a new input to pay the fee
                     MyTransactionOutPoint suitableOutPoint = null;
