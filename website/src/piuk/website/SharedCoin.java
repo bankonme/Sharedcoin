@@ -70,8 +70,8 @@ public class SharedCoin extends HttpServlet {
 
     private static final long RecommendedMinIterations = 4;
     private static final long RecommendedMaxIterations = 10;
-    private static final long RecommendedIterationsMin = 2;
-    private static final long RecommendedIterationsMax = 5;
+    private static final long RecommendedIterationsMin = 4;
+    private static final long RecommendedIterationsMax = 8;
 
     private static final long MaxChangeSingleUnconfirmedInput = 50 * COIN;
     private static final long MaxChangeSingleConfirmedInput = 5 * COIN;
@@ -759,7 +759,7 @@ public class SharedCoin extends HttpServlet {
                 //Archive ZERO balance addresses with more than one transaction
                 //Delete archived addresses with transactions > 6 confirmations
 
-                MyRemoteWallet wallet = getWallet();
+                final MyRemoteWallet wallet = getWallet();
 
                 for (int ii = 0; ii < 2; ++ii) {
                     try {

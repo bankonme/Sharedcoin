@@ -119,14 +119,21 @@ public class AdminServlet extends HttpServlet {
         return ecKey;
     }
 
+    public static List<String> getApiRoots() {
+        return (List)Settings.instance().getList("api_roots");
+    }
+
     public static void handleResults(List<Pair<String, String>> results) throws Exception {
         StringBuffer params = new StringBuffer("api_code="+Settings.instance().getString("api_code")+"&simple=true&active=");
         for (Pair<String, String> pair : results) {
+
             params.append(pair.getFirst() + "|");
         }
         params.deleteCharAt(params.length()-1);
 
-        String response = Util.postURL(Settings.instance().getString("api_root") + "multiaddr", params.toString(), null);
+        final List<String> apiRoots = getApiRoots();
+
+        String response = Util.postURL(apiRoots.get(0) + "multiaddr", params.toString(), null);
 
         Map<String, JSONObject> obj = (JSONObject) new JSONParser().parse(response);
 

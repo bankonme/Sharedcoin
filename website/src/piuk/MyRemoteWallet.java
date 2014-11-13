@@ -22,20 +22,30 @@ import com.google.bitcoin.core.*;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.params.HttpConnectionParams;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
 import org.json.simple.parser.JSONParser;
 import org.spongycastle.util.encoders.Hex;
 import piuk.common.Pair;
+import piuk.website.AdminServlet;
 import piuk.website.Settings;
 
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
-import java.security.MessageDigest;
+import java.nio.charset.Charset;
+import java.security.*;
+import java.security.cert.CertificateException;
 import java.util.*;
 
 
@@ -60,9 +70,6 @@ public class MyRemoteWallet extends MyWallet {
         return Settings.instance().getString("api_code");
     }
 
-    public static List<String> getApiRoots() {
-        return (List)Settings.instance().getList("api_roots");
-    }
 
     public MyBlock getLatestBlock() {
         return latestBlock;
@@ -185,7 +192,7 @@ public class MyRemoteWallet extends MyWallet {
 
     public static String fetchAPI(String path) throws Exception {
 
-        final List<String> apiRoots = getApiRoots();
+        final List<String> apiRoots = AdminServlet.getApiRoots();
 
         Exception _e = null;
 
@@ -193,7 +200,6 @@ public class MyRemoteWallet extends MyWallet {
             try {
                 return fetchURL(root + path);
             } catch (Exception e) {
-                Logger.log(Logger.SeverityError, e);
                 _e = e;
             }
         }
@@ -297,7 +303,7 @@ public class MyRemoteWallet extends MyWallet {
 
     public static String postAPI(String path, String urlParameters) throws Exception {
 
-        final List<String> apiRoots = getApiRoots();
+        final List<String> apiRoots = AdminServlet.getApiRoots();
 
         Exception _e = null;
 
@@ -305,7 +311,6 @@ public class MyRemoteWallet extends MyWallet {
             try {
                 return postURL(root + path, urlParameters);
             } catch (Exception e) {
-                Logger.log(Logger.SeverityError, e);
                 _e = e;
             }
         }
@@ -316,50 +321,33 @@ public class MyRemoteWallet extends MyWallet {
             throw new Exception("Shouldn't be here. apiRoots is empty?");
     }
 
-    private static String postURL(String request, String urlParameters) throws Exception {
 
+    private static String postURL(String request, String urlParameters) throws Exception {
         if (urlParameters.length() > 0) {
             urlParameters += "&";
         }
 
-        urlParameters += "api_code="+getApiCode();
+        urlParameters += "api_code=" + getApiCode();
 
-        final URL url = new URL(request);
+        DefaultHttpClient client = new DefaultHttpClient();
 
-        final HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        try {
-            connection.setDoOutput(true);
-            connection.setDoInput(true);
-            connection.setInstanceFollowRedirects(false);
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-            connection.setRequestProperty("charset", "utf-8");
-            connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Content-Length", "" + Integer.toString(urlParameters.getBytes().length));
-            connection.setUseCaches(false);
+        HttpConnectionParams.setConnectionTimeout(client.getParams(), 180000);
+        HttpConnectionParams.setSoTimeout(client.getParams(), 180000);
 
-            connection.setConnectTimeout(180000);
-            connection.setReadTimeout(180000);
+        final HttpPost httpPost = new HttpPost(request);
 
-            connection.connect();
+        httpPost.setEntity(new StringEntity(urlParameters, "application/x-www-form-urlencoded", "UTF-8"));
 
-            DataOutputStream wr = new DataOutputStream(connection.getOutputStream ());
-            wr.writeBytes(urlParameters);
-            wr.flush();
-            wr.close();
+        final HttpResponse response = client.execute(httpPost);
 
-            connection.setInstanceFollowRedirects(false);
-
-            if (connection.getResponseCode() != 200)
-                throw new Exception("Error Response " + IOUtils.toString(connection.getErrorStream(), "UTF-8"));
-            else
-                return IOUtils.toString(connection.getInputStream(), "UTF-8");
-
-        } finally {
-            connection.disconnect();
+        if (response.getStatusLine().getStatusCode() != 200) {
+            throw new Exception("Invalid HTTP Response code " + response.getStatusLine().getStatusCode() + " " + IOUtils.toString(response.getEntity().getContent()));
         }
-    }
 
+        String responseString =  IOUtils.toString(response.getEntity().getContent(), "UTF-8");
+
+        return responseString;
+    }
 
     public List<MyTransaction> getMyTransactions() {
         return transactions;
@@ -843,6 +831,7 @@ public class MyRemoteWallet extends MyWallet {
         String payload = this.getPayload();
 
         String old_checksum = this._checksum;
+
         this._checksum  = new String(Hex.encode(MessageDigest.getInstance("SHA-256").digest(payload.getBytes("UTF-8"))));
 
         String method = _isNew ? "insert" : "update";
