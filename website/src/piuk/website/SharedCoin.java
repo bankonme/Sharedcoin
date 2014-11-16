@@ -1111,6 +1111,8 @@ public class SharedCoin extends HttpServlet {
         List<CompletedTransaction> completedTransactions;
 
         final Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
         try {
             completedTransactions = new ArrayList<>(recentlyCompletedTransactions.values());
         } finally {
@@ -1225,6 +1227,8 @@ public class SharedCoin extends HttpServlet {
 
         {
             final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
             try {
                 completedTransactions = new ArrayList<>(recentlyCompletedTransactions.values());
             } finally {
@@ -1236,6 +1240,8 @@ public class SharedCoin extends HttpServlet {
             if (completedTransaction.getCompletedTime() > 0 && completedTransaction.getCompletedTime() < now-ProposalExpiryTimeAfterCompletion) {
                 {
                     final Lock lock = activeAndCompletedMapLock.writeLock();
+
+                    lock.lock();
                     try {
                         recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
                     } finally {
@@ -2788,6 +2794,8 @@ public class SharedCoin extends HttpServlet {
     public static CompletedTransaction findCompletedTransactionByProposalID(long proposalID) {
         {
             final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
             try {
                 for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
                     if (completedTransaction.getProposalID() == proposalID) {
@@ -2805,6 +2813,8 @@ public class SharedCoin extends HttpServlet {
     public static CompletedTransaction findCompletedTransaction(Hash hash) {
         {
             final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
             try {
                 return recentlyCompletedTransactions.get(hash);
             } finally {
@@ -3444,6 +3454,8 @@ public class SharedCoin extends HttpServlet {
         List<CompletedTransaction> recentlyCompleted;
         {
             final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
             try {
                 recentlyCompleted = new ArrayList<>(recentlyCompletedTransactions.values());
             } finally {
