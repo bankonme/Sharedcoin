@@ -23,9 +23,9 @@ public class Logger {
 
     public static void log(int severity, final Object args) {
         synchronized (logStack) {
-            logStack.add("------------\n" + args.toString() + "\n------------");
+            logStack.add("------------ "+new Date()+" ------------\n" + args.toString() + "\n------------");
 
-            if (logStack.size() >= 50) {
+            if (logStack.size() >= 75) {
                 logStack.remove(0);
             }
         }

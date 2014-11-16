@@ -29,8 +29,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 @WebServlet({"/home"})
 public class SharedCoin extends HttpServlet {
 
-    final static Map<Long, Offer> pendingOffers = new ConcurrentHashMap<>();
-    final static Map<Long, Proposal> activeProposals = new ConcurrentHashMap<>();
+    final static Map<Long, Offer> pendingOffers = new HashMap<>();
+    final static Map<Long, Proposal> activeProposals = new HashMap<>();
     final static Map<Hash, CompletedTransaction> recentlyCompletedTransactions = new ConcurrentHashMap<>();
 
     final static Set<String> usedAddresses = new HashSet<>();
@@ -89,7 +89,9 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxNumberOfOutputsIncludingChange = 40; //The number of outputs to aim for in a single transaction including change outputs
     private static final long MaxNumberOfInputs = 100; //The soft max number of inputs to use for in a single transaction
 
-    private static final long ProposalExpiryTime = 240000; //4 Minutes
+    private static final long ProposalExpiryTimeUnsigned = 240000; //4 Minutes
+    private static final long ProposalExpiryTimeSigned = 600000; //4 Minutes
+
     private static final long OfferExpiryTime = 600000; //10 Minutes
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
     private static final long ProposalExpiryTimeFailedToBroadcast = 1800000; //30 Minutes
@@ -231,8 +233,8 @@ public class SharedCoin extends HttpServlet {
             return fee;
         }
 
-
         public synchronized boolean pushTransaction() throws Exception {
+
             if (completedTime == 0)
                 completedTime = System.currentTimeMillis();
 
@@ -941,11 +943,13 @@ public class SharedCoin extends HttpServlet {
             offer.requestedOutputs = Collections.unmodifiableList(offer.requestedOutputs);
             offer.offeredOutpoints = Collections.unmodifiableList(offer.offeredOutpoints);
 
-            if (pendingOffers.containsKey(offer.getOfferID())) {
-                throw new Exception("Duplicate Offer ID");
-            }
+            synchronized (pendingOffers) {
+                if (pendingOffers.containsKey(offer.getOfferID())) {
+                    throw new Exception("Duplicate Offer ID");
+                }
 
-            pendingOffers.put(offer.getOfferID(), offer);
+                pendingOffers.put(offer.getOfferID(), offer);
+            }
         } finally {
             lock.unlock();
         }
@@ -1134,11 +1138,27 @@ public class SharedCoin extends HttpServlet {
 
     public static void cleanExpiredProposals() {
         long now = System.currentTimeMillis();
-        for (Proposal proposal : activeProposals.values()) {
-            if (proposal.getCreatedTime() > 0 && proposal.getCreatedTime() < now-ProposalExpiryTime) {
-                DOSManager.failedToSignProposal(proposal);
 
-                activeProposals.remove(proposal.getProposalID());
+
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
+            if (proposal.getCreatedTime() > 0
+                    && ((proposal.getNSigned() < proposal.getNSignaturesNeeded() && proposal.getCreatedTime() < now-ProposalExpiryTimeUnsigned)
+                    || (proposal.getNSigned() == proposal.getNSignaturesNeeded() && proposal.getCreatedTime() < now-ProposalExpiryTimeSigned))) {
+
+                Logger.log(Logger.SeverityINFO, "Clean Expired Proposal " + proposal);
+
+                synchronized (proposal) {
+                    DOSManager.failedToSignProposal(proposal);
+
+                    synchronized (activeProposals) {
+                        activeProposals.remove(proposal.getProposalID());
+                    }
+                }
             }
         }
     }
@@ -1155,9 +1175,17 @@ public class SharedCoin extends HttpServlet {
 
     public static void cleanExpiredOffers() {
         long now = System.currentTimeMillis();
-        for (Offer offer : pendingOffers.values()) {
+
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+        for (Offer offer : offers) {
             if (offer.getReceivedTime() > 0 && offer.getReceivedTime() < now-OfferExpiryTime) {
-                pendingOffers.remove(offer.getOfferID());
+                synchronized(pendingOffers) {
+                    pendingOffers.remove(offer.getOfferID());
+                }
             }
         }
     }
@@ -1166,7 +1194,12 @@ public class SharedCoin extends HttpServlet {
     public static void createProposalsIfNeeded() throws Exception {
         long now = System.currentTimeMillis();
 
-        for (Offer offer : pendingOffers.values()) {
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+        for (Offer offer : offers) {
             //If the oldest offer has reached a certain age force creation
             if (offer.getReceivedTime() < now-offer.forceProposalMaxAge) {
                 runCreateProposals();
@@ -1180,8 +1213,14 @@ public class SharedCoin extends HttpServlet {
         if (recentlyCompletedTransactions.containsKey(hash))
             return true;
 
-        Sha256Hash _hash = new Sha256Hash(hash.getBytes());
-        for (Proposal proposal : activeProposals.values()) {
+        final Sha256Hash _hash = new Sha256Hash(hash.getBytes());
+
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             if (proposal.getTransaction() != null && proposal.getTransaction().getHash().equals(_hash)) {
                 return true;
             }
@@ -1206,7 +1245,14 @@ public class SharedCoin extends HttpServlet {
 
                     //Set used to make sure no two offers are combined which contain inputs from the same transaction.
                     Set<Hash> inputTransactionHashes = new HashSet<>();
-                    for (Offer offer : pendingOffers.values()) {
+
+                    final List<Offer> offers;
+                    synchronized (pendingOffers) {
+                        offers = new ArrayList<>(pendingOffers.values());
+                    }
+
+
+                    for (Offer offer : offers) {
 
                         nInputs += offer.getOfferedOutpoints().size();
                         nOutputs += offer.getRequestedOutputs().size();
@@ -1274,8 +1320,10 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 //Sanity Check for duplicate
-                if (activeProposals.containsKey(proposal.getProposalID()))
-                    throw new Exception("Duplicate Proposal ID");
+                synchronized (activeProposals) {
+                    if (activeProposals.containsKey(proposal.getProposalID()))
+                        throw new Exception("Duplicate Proposal ID");
+                }
 
                 //Finalize the user offers
                 proposal.offers = Collections.unmodifiableList(proposal.offers);
@@ -1288,11 +1336,17 @@ public class SharedCoin extends HttpServlet {
                 try {
                     final List<MyTransactionOutPoint> allUnspentPreFilter = ourWallet.getUnspentOutputs(1000);
 
+                    Logger.log(Logger.SeverityINFO, "Put Active Proposal " + proposal.getProposalID());
+
                     //Promote the proposal to active
-                    activeProposals.put(proposal.getProposalID(), proposal);
+                    synchronized (activeProposals) {
+                        activeProposals.put(proposal.getProposalID(), proposal);
+                    }
 
                     //Remove the offer from pending
-                    pendingOffers.values().removeAll(proposal.getOffers());
+                    synchronized (pendingOffers) {
+                        pendingOffers.values().removeAll(proposal.getOffers());
+                    }
 
                     proposal.mixWithOurWallet(allUnspentPreFilter);
 
@@ -1307,9 +1361,13 @@ public class SharedCoin extends HttpServlet {
                     proposal.ourOffers = Collections.unmodifiableList(proposal.ourOffers);
 
                 } catch (Exception e) {
-                    activeProposals.keySet().remove(proposal.getProposalID());
+                    synchronized (activeProposals) {
+                        activeProposals.keySet().remove(proposal.getProposalID());
+                    }
 
-                    pendingOffers.values().removeAll(proposal.getOffers());
+                    synchronized (pendingOffers) {
+                        pendingOffers.values().removeAll(proposal.getOffers());
+                    }
 
                     throw e;
                 } finally {
@@ -1481,7 +1539,7 @@ public class SharedCoin extends HttpServlet {
                         //Help Debug
                         Logger.printLogStack();
 
-                        System.out.println(tx);
+                        Logger.log(Logger.SeverityINFO, tx);
 
                         throw new Exception("Sanity Check Failed. Our Offer Outpoint already Spent in Completed Transaction " + outpointWithValue + " Completed Transaction: " + completedTransaction + " (Current Time: " + System.currentTimeMillis() + ")");
                     }
@@ -1512,7 +1570,13 @@ public class SharedCoin extends HttpServlet {
             }
 
             if (!sanityCheckBeforePush()) {
-                activeProposals.remove(getProposalID());
+                synchronized (activeProposals) {
+
+                    Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
+
+                    activeProposals.remove(getProposalID());
+                }
+
                 throw new Exception("Sanity Check Returned False");
             }
 
@@ -1529,7 +1593,11 @@ public class SharedCoin extends HttpServlet {
 
             recentlyCompletedTransactions.put(new Hash(tx.getHash().getBytes()), completedTransaction);
 
-            activeProposals.remove(getProposalID());
+            Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
+
+            synchronized (activeProposals) {
+                activeProposals.remove(getProposalID());
+            }
 
             boolean pushed = completedTransaction.pushTransaction();
 
@@ -2040,7 +2108,9 @@ public class SharedCoin extends HttpServlet {
                 }
             }
 
-            Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer);
+            synchronized (activeProposals) {
+                Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
+            }
 
             if (!addOurOffer(newOffer)) {
                 Logger.log(Logger.SeverityWARN, "Error Adding Our Offer");
@@ -2083,7 +2153,7 @@ public class SharedCoin extends HttpServlet {
             //Remove any unspent outpoints from transactions which user offers used
             int verySmallNoneStandardCount = 0;
             for (MyTransactionOutPoint outPoint : allUnspentPreFilter) {
-                Hash hash = new Hash(outPoint.getHash().getBytes());
+                final Hash hash = new Hash(outPoint.getHash().getBytes());
 
                 boolean suitableToUse = true;
                 for (Offer offer : offers) {
@@ -2113,7 +2183,7 @@ public class SharedCoin extends HttpServlet {
                 boolean allFailed = true;
                 boolean fullBreak = false;
                 for (Offer offer : offers) {
-                    List<MyTransactionOutPoint> unspent = new ArrayList<>(allUnspent);
+                    final List<MyTransactionOutPoint> unspent = new ArrayList<>(allUnspent);
 
                     try {
                         if (addOutputsWhichMimicsOffer(unspent, offer)) {
@@ -2426,7 +2496,7 @@ public class SharedCoin extends HttpServlet {
                 extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
                 if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                    Logger.log(Logger.SeverityWARN, "extraFeeNeeded + (" + extraFeeNeeded +") > 0");
+                    Logger.log(Logger.SeverityINFO, "Proposal " + getProposalID() + " extraFeeNeeded + (" + extraFeeNeeded +") > 0");
 
                     //So we add a new input to pay the fee
                     MyTransactionOutPoint suitableOutPoint = null;
@@ -2574,14 +2644,15 @@ public class SharedCoin extends HttpServlet {
 
 
     public static Proposal findProposal(long proposalID) {
-        Proposal proposal = activeProposals.get(proposalID);
+        synchronized (activeProposals) {
+            Proposal proposal = activeProposals.get(proposalID);
 
-        if (proposal != null)
-            return proposal;
+            if (proposal != null)
+                return proposal;
 
-        return null;
+            return null;
+        }
     }
-
 
     public static CompletedTransaction findCompletedTransactionByProposalID(long proposalID) {
         for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
@@ -2594,12 +2665,20 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findOffer(long offerID) {
-        Offer offer = pendingOffers.get(offerID);
+        final Offer offer;
+        synchronized (pendingOffers) {
+            offer = pendingOffers.get(offerID);
+        }
 
         if (offer != null)
             return offer;
 
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             for (Offer _offer : proposal.getOffers()) {
                 if (_offer.getOfferID() == offerID)
                     return _offer;
@@ -2614,7 +2693,12 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findActiveOfferTargetingAddress(String address) {
-        for (Offer offer : pendingOffers.values()) {
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+        for (Offer offer : offers) {
             for (Output output : offer.getRequestedOutputs())
                 if (output.getAddress().toString().equals(address))
                     return offer;
@@ -2624,7 +2708,12 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Proposal findActiveProposalTargetingAddress(String address) {
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             for (Offer offer : proposal.getOffers()) {
                 for (Output output : offer.getRequestedOutputs())
                     if (output.getAddress().toString().equals(address))
@@ -2650,13 +2739,23 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findOfferConsumingAddress(String address) throws ScriptException {
-        for (Offer offer : pendingOffers.values()) {
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+        for (Offer offer : offers) {
             for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints())
                 if (outpointWithValue.getAddress().equals(address))
                     return offer;
         }
 
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             for (Offer offer : proposal.getOffers()) {
                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints())
                     if (outpointWithValue.getAddress().equals(address))
@@ -2711,13 +2810,24 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findOfferConsumingOutpoint(Hash hash, int index) {
-        for (Offer offer : pendingOffers.values()) {
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+
+        for (Offer offer : offers) {
             if (offer.spendsOutpoint(hash, index)) {
                 return offer;
             }
         }
 
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             for (Offer offer : proposal.getOffers()) {
                 if (offer.spendsOutpoint(hash, index)) {
                     return offer;
@@ -2735,7 +2845,12 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Proposal findActiveProposalByTransaction(Hash hash) {
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             if (proposal.isFinalized && proposal.transaction != null)
                 if (new Hash(proposal.transaction.getHash().getBytes()).equals(hash))
                     return proposal;
@@ -2745,7 +2860,12 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Proposal findActiveProposalFromOffer(Offer offer) {
-        for (Proposal proposal : activeProposals.values()) {
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        for (Proposal proposal : proposals) {
             for (Offer _offer : proposal.getOffers()) {
                 if (_offer.equals(offer))
                     return proposal;
@@ -3092,8 +3212,19 @@ public class SharedCoin extends HttpServlet {
             return;
         }
 
-        req.setAttribute("pending_offers", pendingOffers.values());
-        req.setAttribute("active_proposals", activeProposals.values());
+        final List<Offer> offers;
+        synchronized (pendingOffers) {
+            offers = new ArrayList<>(pendingOffers.values());
+        }
+
+        req.setAttribute("pending_offers", offers);
+
+        final List<Proposal> proposals;
+        synchronized (activeProposals) {
+            proposals = new ArrayList<>(activeProposals.values());
+        }
+
+        req.setAttribute("active_proposals", proposals);
 
 
         List<CompletedTransaction> recentlyCompleted = new ArrayList<>(recentlyCompletedTransactions.values());
@@ -3941,7 +4072,12 @@ public class SharedCoin extends HttpServlet {
 
                         res.sendRedirect("/");
                     } else if (method.equals("finalize_and_push_signed")) {
-                        for (final Proposal proposal : activeProposals.values()) {
+                        final List<Proposal> proposals;
+                        synchronized (activeProposals) {
+                            proposals = new ArrayList<>(activeProposals.values());
+                        }
+
+                        for (final Proposal proposal : proposals) {
                             if (proposal.getNSigned() == proposal.getNSignaturesNeeded()) {
                                 multiThreadExec.execute(new Runnable() {
                                     @Override
