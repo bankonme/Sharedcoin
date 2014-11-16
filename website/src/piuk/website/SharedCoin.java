@@ -31,7 +31,7 @@ public class SharedCoin extends HttpServlet {
 
     final static Map<Long, Offer> pendingOffers = new HashMap<>();
     final static Map<Long, Proposal> activeProposals = new HashMap<>();
-    final static Map<Hash, CompletedTransaction> recentlyCompletedTransactions = new ConcurrentHashMap<>();
+    final static Map<Hash, CompletedTransaction> recentlyCompletedTransactions = new HashMap<>();
 
     final static Set<String> usedAddresses = new HashSet<>();
 
@@ -116,6 +116,8 @@ public class SharedCoin extends HttpServlet {
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
 
     private static final ReadWriteLock modifyPendingOffersLock = new ReentrantReadWriteLock();
+
+    private static final ReadWriteLock activeAndCompletedMapLock = new ReentrantReadWriteLock();
 
     public static class CompletedTransaction implements Serializable, Comparable<CompletedTransaction> {
         static final long serialVersionUID = 1L;
@@ -216,7 +218,7 @@ public class SharedCoin extends HttpServlet {
                     continue;
                 }
 
-                CompletedTransaction parent = findCompletedTransactionOutpointWasCreatedIn(hash, input.getOutpoint().getIndex());
+                final CompletedTransaction parent = findCompletedTransaction(hash);
 
                 if (parent == null) {
                     continue;
@@ -910,7 +912,18 @@ public class SharedCoin extends HttpServlet {
         {
             FileOutputStream fos = new FileOutputStream(tempFile);
             ObjectOutputStream oos = new ObjectOutputStream(fos);
-            oos.writeObject(new HashMap<>(recentlyCompletedTransactions));
+
+            {
+                Lock lock = activeAndCompletedMapLock.readLock();
+
+                lock.lock();
+                try {
+                    oos.writeObject(new HashMap<>(recentlyCompletedTransactions));
+                } finally {
+                    lock.unlock();
+                }
+            }
+
             oos.close();
         }
 
@@ -925,7 +938,17 @@ public class SharedCoin extends HttpServlet {
 
         FileInputStream fis = new FileInputStream(AdminServlet.RecentlyCompletedTransactionsPath);
         ObjectInputStream ois = new ObjectInputStream(fis);
-        recentlyCompletedTransactions.putAll((Map<Hash, CompletedTransaction>) ois.readObject());
+
+        {
+            Lock lock = activeAndCompletedMapLock.writeLock();
+
+            lock.lock();
+            try {
+                recentlyCompletedTransactions.putAll((Map<Hash, CompletedTransaction>) ois.readObject());
+            } finally {
+                lock.unlock();
+            }
+        }
 
         ois.close();
     }
@@ -1071,12 +1094,30 @@ public class SharedCoin extends HttpServlet {
             removeRecentlyCompletedAndChildren(child);
         }
 
-        recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
+        {
+            Lock lock = activeAndCompletedMapLock.writeLock();
+
+            lock.lock();
+            try {
+                recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
     public static void checkIfProposalsAreBroadcastSuccessfully() {
 
-        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+        List<CompletedTransaction> completedTransactions;
+
+        final Lock lock = activeAndCompletedMapLock.readLock();
+        try {
+            completedTransactions = new ArrayList<>(recentlyCompletedTransactions.values());
+        } finally {
+            lock.unlock();
+        }
+
+        for (CompletedTransaction completedTransaction : completedTransactions) {
             long now = System.currentTimeMillis();
 
             long completedTime = completedTransaction.getCompletedTime();
@@ -1141,8 +1182,16 @@ public class SharedCoin extends HttpServlet {
 
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -1155,8 +1204,13 @@ public class SharedCoin extends HttpServlet {
                 synchronized (proposal) {
                     DOSManager.failedToSignProposal(proposal);
 
-                    synchronized (activeProposals) {
+                    final Lock lock = activeAndCompletedMapLock.writeLock();
+
+                    lock.lock();
+                    try {
                         activeProposals.remove(proposal.getProposalID());
+                    } finally {
+                        lock.unlock();
                     }
                 }
             }
@@ -1166,9 +1220,28 @@ public class SharedCoin extends HttpServlet {
 
     public static void cleanRecentlyCompletedProposals() {
         long now = System.currentTimeMillis();
-        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+
+        List<CompletedTransaction> completedTransactions;
+
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+            try {
+                completedTransactions = new ArrayList<>(recentlyCompletedTransactions.values());
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        for (CompletedTransaction completedTransaction : completedTransactions) {
             if (completedTransaction.getCompletedTime() > 0 && completedTransaction.getCompletedTime() < now-ProposalExpiryTimeAfterCompletion) {
-                recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
+                {
+                    final Lock lock = activeAndCompletedMapLock.writeLock();
+                    try {
+                        recentlyCompletedTransactions.remove(new Hash(completedTransaction.getTransaction().getHash().getBytes()));
+                    } finally {
+                        lock.unlock();
+                    }
+                }
             }
         }
     }
@@ -1210,14 +1283,21 @@ public class SharedCoin extends HttpServlet {
 
 
     public static boolean isTransactionCreatedByUs(Hash hash) {
-        if (recentlyCompletedTransactions.containsKey(hash))
+        if (findCompletedTransaction(hash) != null)
             return true;
 
         final Sha256Hash _hash = new Sha256Hash(hash.getBytes());
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -1319,10 +1399,16 @@ public class SharedCoin extends HttpServlet {
                     return;
                 }
 
-                //Sanity Check for duplicate
-                synchronized (activeProposals) {
-                    if (activeProposals.containsKey(proposal.getProposalID()))
-                        throw new Exception("Duplicate Proposal ID");
+                {
+                    Lock mapLock = activeAndCompletedMapLock.readLock();
+
+                    mapLock.lock();
+                    try {
+                        if (activeProposals.containsKey(proposal.getProposalID()))
+                            throw new Exception("Duplicate Proposal ID");
+                    } finally {
+                        mapLock.unlock();
+                    }
                 }
 
                 //Finalize the user offers
@@ -1339,8 +1425,15 @@ public class SharedCoin extends HttpServlet {
                     Logger.log(Logger.SeverityINFO, "Put Active Proposal " + proposal.getProposalID());
 
                     //Promote the proposal to active
-                    synchronized (activeProposals) {
-                        activeProposals.put(proposal.getProposalID(), proposal);
+                    {
+                        Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                        mapLock.lock();
+                        try {
+                            activeProposals.put(proposal.getProposalID(), proposal);
+                        } finally {
+                            mapLock.unlock();
+                        }
                     }
 
                     //Remove the offer from pending
@@ -1361,8 +1454,15 @@ public class SharedCoin extends HttpServlet {
                     proposal.ourOffers = Collections.unmodifiableList(proposal.ourOffers);
 
                 } catch (Exception e) {
-                    synchronized (activeProposals) {
-                        activeProposals.keySet().remove(proposal.getProposalID());
+                    {
+                        Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                        mapLock.lock();
+                        try {
+                            activeProposals.keySet().remove(proposal.getProposalID());
+                        } finally {
+                            mapLock.unlock();
+                        }
                     }
 
                     synchronized (pendingOffers) {
@@ -1565,16 +1665,22 @@ public class SharedCoin extends HttpServlet {
                 throw new Exception("pushTransaction() tx null");
             }
 
-            if (recentlyCompletedTransactions.containsKey(new Hash(tx.getHash().getBytes()))) {
+            if (findCompletedTransaction(new Hash(tx.getHash().getBytes())) != null) {
                 throw new Exception("Proposal Already Pushed");
             }
 
             if (!sanityCheckBeforePush()) {
-                synchronized (activeProposals) {
-
+                {
                     Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
 
-                    activeProposals.remove(getProposalID());
+                    Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                    mapLock.lock();
+                    try {
+                        activeProposals.remove(getProposalID());
+                    } finally {
+                        mapLock.unlock();
+                    }
                 }
 
                 throw new Exception("Sanity Check Returned False");
@@ -1591,13 +1697,23 @@ public class SharedCoin extends HttpServlet {
             completedTransaction.nParticipants = getOffers().size();
             completedTransaction.fee = getTransactionFee();
 
-            recentlyCompletedTransactions.put(new Hash(tx.getHash().getBytes()), completedTransaction);
-
             Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
 
-            synchronized (activeProposals) {
-                activeProposals.remove(getProposalID());
+            {
+                Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
+
+                Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                mapLock.lock();
+                try {
+                    recentlyCompletedTransactions.put(new Hash(tx.getHash().getBytes()), completedTransaction);
+
+                    activeProposals.remove(getProposalID());
+                } finally {
+                    mapLock.unlock();
+                }
             }
+
 
             boolean pushed = completedTransaction.pushTransaction();
 
@@ -1917,7 +2033,7 @@ public class SharedCoin extends HttpServlet {
                     }
 
                     //If the fee is less than expected don't spend the outputs
-                    final CompletedTransaction createdIn = findCompletedTransactionOutpointWasCreatedIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN());
+                    final CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
                     if (createdIn != null && !createdIn.isOkToSpend()) {
                         continue;
                     }
@@ -2108,9 +2224,17 @@ public class SharedCoin extends HttpServlet {
                 }
             }
 
-            synchronized (activeProposals) {
-                Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
+            {
+                Lock mapLock = activeAndCompletedMapLock.readLock();
+
+                mapLock.lock();
+                try {
+                    Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
+                } finally {
+                    mapLock.unlock();
+                }
             }
+
 
             if (!addOurOffer(newOffer)) {
                 Logger.log(Logger.SeverityWARN, "Error Adding Our Offer");
@@ -2516,7 +2640,7 @@ public class SharedCoin extends HttpServlet {
                         }
 
                         //If the fee is less than expected don't spend the outputs
-                        CompletedTransaction createdIn = findCompletedTransactionOutpointWasCreatedIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN());
+                        CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
                         if (createdIn != null && !createdIn.isOkToSpend()) {
                             continue;
                         }
@@ -2644,25 +2768,51 @@ public class SharedCoin extends HttpServlet {
 
 
     public static Proposal findProposal(long proposalID) {
-        synchronized (activeProposals) {
-            Proposal proposal = activeProposals.get(proposalID);
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
 
-            if (proposal != null)
-                return proposal;
+            lock.lock();
+            try {
+                Proposal proposal = activeProposals.get(proposalID);
 
-            return null;
+                if (proposal != null)
+                    return proposal;
+
+                return null;
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
     public static CompletedTransaction findCompletedTransactionByProposalID(long proposalID) {
-        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-            if (completedTransaction.getProposalID() == proposalID) {
-                return completedTransaction;
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+            try {
+                for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+                    if (completedTransaction.getProposalID() == proposalID) {
+                        return completedTransaction;
+                    }
+                }
+            } finally {
+                lock.unlock();
             }
         }
 
         return null;
     }
+
+    public static CompletedTransaction findCompletedTransaction(Hash hash) {
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+            try {
+                return recentlyCompletedTransactions.get(hash);
+            } finally {
+                lock.unlock();
+            }
+        }
+    }
+
 
     public static Offer findOffer(long offerID) {
         final Offer offer;
@@ -2674,8 +2824,15 @@ public class SharedCoin extends HttpServlet {
             return offer;
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -2709,8 +2866,15 @@ public class SharedCoin extends HttpServlet {
 
     public static Proposal findActiveProposalTargetingAddress(String address) {
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -2751,8 +2915,15 @@ public class SharedCoin extends HttpServlet {
         }
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -2774,15 +2945,23 @@ public class SharedCoin extends HttpServlet {
 
     public static CompletedTransaction findCompletedTransactionOutputWasSpentIn(Hash hash, int index) {
 
-        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-            List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
+        final  Lock lock = activeAndCompletedMapLock.readLock();
 
-            for (TransactionInput input : inputs) {
-                TransactionOutPoint outPoint = input.getOutpoint();
+        lock.lock();
+        try {
+            for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+                List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
 
-                if (new Hash(outPoint.getHash().getBytes()).equals(hash) && outPoint.getIndex() == index)
-                    return completedTransaction;
+                for (TransactionInput input : inputs) {
+                    TransactionOutPoint outPoint = input.getOutpoint();
+
+                    if (new Hash(outPoint.getHash().getBytes()).equals(hash) && outPoint.getIndex() == index)
+                        return completedTransaction;
+                }
             }
+
+        } finally {
+            lock.unlock();
         }
 
         return null;
@@ -2791,23 +2970,29 @@ public class SharedCoin extends HttpServlet {
     public static List<CompletedTransaction> findCompletedTransactionsSpendingTransactionHash(Hash hash) {
         List<CompletedTransaction> results = new ArrayList<>();
 
-        for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-            List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
 
-            for (TransactionInput input : inputs) {
-                TransactionOutPoint outPoint = input.getOutpoint();
+            lock.lock();
+            try {
+                for (CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+                    List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
 
-                if (new Hash(outPoint.getHash().getBytes()).equals(hash))
-                    results.add(completedTransaction);
+                    for (TransactionInput input : inputs) {
+                        TransactionOutPoint outPoint = input.getOutpoint();
+
+                        if (new Hash(outPoint.getHash().getBytes()).equals(hash))
+                            results.add(completedTransaction);
+                    }
+                }
+            } finally {
+                lock.unlock();
             }
         }
 
         return results;
     }
 
-    public static CompletedTransaction findCompletedTransactionOutpointWasCreatedIn(Hash hash, long index) {
-        return recentlyCompletedTransactions.get(hash);
-    }
 
     public static Offer findOfferConsumingOutpoint(Hash hash, int index) {
         final List<Offer> offers;
@@ -2823,8 +3008,15 @@ public class SharedCoin extends HttpServlet {
         }
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -2846,8 +3038,15 @@ public class SharedCoin extends HttpServlet {
 
     public static Proposal findActiveProposalByTransaction(Hash hash) {
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -2861,8 +3060,15 @@ public class SharedCoin extends HttpServlet {
 
     public static Proposal findActiveProposalFromOffer(Offer offer) {
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         for (Proposal proposal : proposals) {
@@ -3220,14 +3426,30 @@ public class SharedCoin extends HttpServlet {
         req.setAttribute("pending_offers", offers);
 
         final List<Proposal> proposals;
-        synchronized (activeProposals) {
-            proposals = new ArrayList<>(activeProposals.values());
+
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+
+            lock.lock();
+            try {
+                proposals = new ArrayList<>(activeProposals.values());
+            } finally {
+                lock.unlock();
+            }
         }
 
         req.setAttribute("active_proposals", proposals);
 
 
-        List<CompletedTransaction> recentlyCompleted = new ArrayList<>(recentlyCompletedTransactions.values());
+        List<CompletedTransaction> recentlyCompleted;
+        {
+            final Lock lock = activeAndCompletedMapLock.readLock();
+            try {
+                recentlyCompleted = new ArrayList<>(recentlyCompletedTransactions.values());
+            } finally {
+                lock.unlock();
+            }
+        }
 
         Collections.sort(recentlyCompleted);
 
@@ -3472,7 +3694,7 @@ public class SharedCoin extends HttpServlet {
                                     for (int ii = 0; ii < 5; ++ii) {
                                         //If it is a transaction we recently broadcast may be blockchain.info is lagging
                                         //Wait a bit
-                                        if (recentlyCompletedTransactions.containsKey(hash) || findActiveProposalByTransaction(hash) != null) {
+                                        if (findCompletedTransaction(hash) != null || findActiveProposalByTransaction(hash) != null) {
                                             try {
                                                 transaction = MyRemoteWallet.getTransactionByHash(hash, true);
 
@@ -4073,8 +4295,15 @@ public class SharedCoin extends HttpServlet {
                         res.sendRedirect("/");
                     } else if (method.equals("finalize_and_push_signed")) {
                         final List<Proposal> proposals;
-                        synchronized (activeProposals) {
-                            proposals = new ArrayList<>(activeProposals.values());
+                        {
+                            final Lock lock = activeAndCompletedMapLock.readLock();
+
+                            lock.lock();
+                            try {
+                                proposals = new ArrayList<>(activeProposals.values());
+                            } finally {
+                                lock.unlock();
+                            }
                         }
 
                         for (final Proposal proposal : proposals) {
