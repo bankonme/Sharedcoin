@@ -1,6 +1,5 @@
 package piuk;
 
-import javax.servlet.http.HttpServletRequest;
 import java.util.Date;
 import java.util.List;
 import java.util.ArrayList;
@@ -23,9 +22,9 @@ public class Logger {
 
     public static void log(int severity, final Object args) {
         synchronized (logStack) {
-            logStack.add("------------ "+new Date()+" ------------\n" + args.toString() + "\n------------");
+            logStack.add("------------ "+new Date()+" ------------\n" + args.toString());
 
-            if (logStack.size() >= 75) {
+            if (logStack.size() >= 100) {
                 logStack.remove(0);
             }
         }

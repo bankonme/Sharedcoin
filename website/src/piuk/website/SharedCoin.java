@@ -1610,12 +1610,6 @@ public class SharedCoin extends HttpServlet {
                     final CompletedTransaction completedTransaction = findCompletedTransactionOutputWasSpentIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
 
                     if (completedTransaction != null) {
-
-                        //Ignore if its ours
-                        if (completedTransaction.getTransaction().getHash().equals(tx.getHash())) {
-                            continue;
-                        }
-
                         //Help Debug
                         Logger.printLogStack();
 
@@ -1635,12 +1629,6 @@ public class SharedCoin extends HttpServlet {
 
 
                     if (completedTransaction != null) {
-
-                        //Ignore if its ours
-                        if (completedTransaction.getTransaction().getHash().equals(tx.getHash())) {
-                            continue;
-                        }
-
                         Logger.log(Logger.SeverityINFO, tx);
 
                         //Help Debug
@@ -1660,63 +1648,72 @@ public class SharedCoin extends HttpServlet {
         };
 
         public synchronized boolean pushTransaction() throws Exception {
-            if (!isFinalized) {
-                throw new Exception("Cannot push transaction, not finalized");
-            }
+            CompletedTransaction completedTransaction;
 
-            final Transaction tx = getTransaction();
+            final Lock offersLock = modifyPendingOffersLock.writeLock();
 
-            if (tx == null) {
-                throw new Exception("pushTransaction() tx null");
-            }
+            offersLock.lock();
 
-            if (findCompletedTransaction(new Hash(tx.getHash().getBytes())) != null) {
-                throw new Exception("Proposal Already Pushed");
-            }
+            try {
+                if (!isFinalized) {
+                    throw new Exception("Cannot push transaction, not finalized");
+                }
 
-            if (!sanityCheckBeforePush()) {
+                final Transaction tx = getTransaction();
+
+                if (tx == null) {
+                    throw new Exception("pushTransaction() tx null");
+                }
+
+                if (findCompletedTransaction(new Hash(tx.getHash().getBytes())) != null) {
+                    throw new Exception("Proposal Already Pushed");
+                }
+
+                if (!sanityCheckBeforePush()) {
+                    {
+                        Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
+
+                        Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                        mapLock.lock();
+                        try {
+                            activeProposals.remove(getProposalID());
+                        } finally {
+                            mapLock.unlock();
+                        }
+                    }
+
+                    throw new Exception("Sanity Check Returned False");
+                }
+
+                completedTransaction = new CompletedTransaction();
+
+                completedTransaction.isConfirmedBroadcastSuccessfully = false;
+                completedTransaction.transaction = tx;
+                completedTransaction.completedTime = System.currentTimeMillis();
+                completedTransaction.pushCount = 0;
+                completedTransaction.lastCheckedConfirmed = 0;
+                completedTransaction.proposalID = getProposalID();
+                completedTransaction.nParticipants = getOffers().size();
+                completedTransaction.fee = getTransactionFee();
+
+                Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
+
                 {
-                    Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
-
                     Lock mapLock = activeAndCompletedMapLock.writeLock();
 
                     mapLock.lock();
                     try {
+                        recentlyCompletedTransactions.put(new Hash(tx.getHash().getBytes()), completedTransaction);
+
                         activeProposals.remove(getProposalID());
                     } finally {
                         mapLock.unlock();
                     }
                 }
-
-                throw new Exception("Sanity Check Returned False");
+            } finally {
+                offersLock.unlock();
             }
-
-            final CompletedTransaction completedTransaction = new CompletedTransaction();
-
-            completedTransaction.isConfirmedBroadcastSuccessfully = false;
-            completedTransaction.transaction = tx;
-            completedTransaction.completedTime = System.currentTimeMillis();
-            completedTransaction.pushCount = 0;
-            completedTransaction.lastCheckedConfirmed = 0;
-            completedTransaction.proposalID = getProposalID();
-            completedTransaction.nParticipants = getOffers().size();
-            completedTransaction.fee = getTransactionFee();
-
-            Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
-
-            {
-                Lock mapLock = activeAndCompletedMapLock.writeLock();
-
-                mapLock.lock();
-                try {
-                    recentlyCompletedTransactions.put(new Hash(tx.getHash().getBytes()), completedTransaction);
-
-                    activeProposals.remove(getProposalID());
-                } finally {
-                    mapLock.unlock();
-                }
-            }
-
 
             boolean pushed = completedTransaction.pushTransaction();
 
@@ -2631,8 +2628,9 @@ public class SharedCoin extends HttpServlet {
                     for (int ii = 0; ii < allUnspent.size(); ++ii) {
                         MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(extraFeeNeeded.longValue(), allUnspent, tested, true);
 
-                        if (outpoint == null)
+                        if (outpoint == null) {
                             break;
+                        }
 
                         tested.add(outpoint);
 
@@ -2951,27 +2949,20 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static CompletedTransaction findCompletedTransactionOutputWasSpentIn(Hash hash, int index) {
-
         final  Lock lock = activeAndCompletedMapLock.readLock();
 
         lock.lock();
         try {
-            Logger.log(Logger.SeverityINFO, "----- findCompletedTransactionOutputWasSpentIn() ");
-
-            Logger.log(Logger.SeverityINFO, "   Hash " + hash + " Index " + index);
-
             for (final CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-
-                Logger.log(Logger.SeverityINFO, "   Completed Transaction " + completedTransaction.getTransaction().getHash() + " Inputs " + completedTransaction.getTransaction().getInputs());
-
                 final List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
 
                 for (TransactionInput input : inputs) {
                     final TransactionOutPoint outPoint = input.getOutpoint();
 
-                    if (new Hash(outPoint.getHash().getBytes()).equals(hash) && outPoint.getIndex() == index) {
-                        Logger.log(Logger.SeverityINFO, "---- Match");
-                        return completedTransaction;
+                    if (new Hash(outPoint.getHash().getBytes()).equals(hash)) {
+                        if (outPoint.getIndex() == index) {
+                            return completedTransaction;
+                        }
                     }
                 }
             }
@@ -2979,7 +2970,6 @@ public class SharedCoin extends HttpServlet {
             lock.unlock();
         }
 
-        Logger.log(Logger.SeverityINFO, "---- Not Found");
 
         return null;
     }
