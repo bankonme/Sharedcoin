@@ -3843,7 +3843,8 @@ public class SharedCoin extends HttpServlet {
                             throw new Exception("Insufficient Fee " + (totalInputValue-totalOutputValue) + " expected " + expectedFee);
                         }
 
-                        if (totalInputValue-totalOutputValue > expectedFee) {
+                        final long feePaid = totalInputValue-totalOutputValue;
+                        if (feePaid > (expectedFee+MinimumNoneStandardOutputValue) || feePaid < (expectedFee-MinimumNoneStandardOutputValue)) {
                             throw new Exception("Paid too much fee. Possibly a client error. (Expected: " + expectedFee + " Paid: " + (totalInputValue-totalOutputValue) + ")");
                         }
 
