@@ -2498,7 +2498,7 @@ public class SharedCoin extends HttpServlet {
                                 continue;
                             }
 
-                            final long difference = Math.abs(secondOfferOutputValue - firstOfferTotalOutputValue);
+                            final long difference = Math.abs(firstOfferTotalOutputValue - secondOfferOutputValue);
 
                             //Ignore the difference if it is less that the standard output size
                             if (difference <= MinimumNoneStandardOutputValue) {
@@ -2867,11 +2867,15 @@ public class SharedCoin extends HttpServlet {
 
 
     public static boolean isOutpointInUse(Hash hash, int index) {
-        return findOfferConsumingOutpoint(hash, index) != null || findConstructingTransactionUsingOutpoint(hash, index) != null;
+        return findOfferConsumingOutpoint(hash, index) != null
+                || findConstructingTransactionUsingOutpoint(hash, index) != null
+                || findActiveProposalsUsingOutpoint(hash, index) != null;
     }
 
     public static boolean isAddressInUse(String address) throws ScriptException {
-        return findOfferConsumingAddress(address) != null || findConstructingTransactionConsumingAddress(address) != null;
+        return findOfferConsumingAddress(address) != null
+                || findConstructingTransactionConsumingAddress(address) != null
+                || findActiveProposalConsumingAddress(address) != null;
     }
 
     public static Offer findOfferConsumingAddress(String address) throws ScriptException {
@@ -2915,21 +2919,66 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
+
+
+    public static boolean doesTransactionUseOutpoint(Transaction transaction, Hash hash, int index) {
+        final List<TransactionInput> inputs = transaction.getInputs();
+
+        for (TransactionInput input : inputs) {
+            final TransactionOutPoint outPoint = input.getOutpoint();
+
+            if (new Hash(outPoint.getHash().getBytes()).equals(hash)) {
+                if (outPoint.getIndex() == index) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static boolean doesTransactionSpendAddress(Transaction transaction, String address) throws ScriptException {
+        final List<TransactionInput> inputs = transaction.getInputs();
+
+        for (TransactionInput input : inputs) {
+            final Address fromAddress = input.getFromAddress();
+
+            if (fromAddress.toString().equals(address)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+    public static Proposal findActiveProposalConsumingAddress(String address) throws ScriptException {
+        final  Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
+        try {
+            for (final Proposal proposal : activeProposals.values()) {
+                if (proposal.transaction != null) {
+                    if (doesTransactionSpendAddress(proposal.transaction, address))
+                        return proposal;
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+
+        return null;
+    }
+
     public static Transaction findConstructingTransactionConsumingAddress(String address) throws ScriptException {
         final  Lock lock = activeAndCompletedMapLock.readLock();
 
         lock.lock();
         try {
             for (final Transaction transaction : constructingTransactions.values()) {
-                final List<TransactionInput> inputs = transaction.getInputs();
 
-                for (TransactionInput input : inputs) {
-                    final Address fromAddress = input.getFromAddress();
-
-                    if (fromAddress.toString().equals(address)) {
-                        return transaction;
-                    }
-                }
+                if (doesTransactionSpendAddress(transaction, address))
+                    return transaction;
             }
         } finally {
             lock.unlock();
@@ -2944,16 +2993,25 @@ public class SharedCoin extends HttpServlet {
         lock.lock();
         try {
             for (final Transaction transaction : constructingTransactions.values()) {
-                final List<TransactionInput> inputs = transaction.getInputs();
+                if (doesTransactionUseOutpoint(transaction, hash, index))
+                    return transaction;
+            }
+        } finally {
+            lock.unlock();
+        }
 
-                for (TransactionInput input : inputs) {
-                    final TransactionOutPoint outPoint = input.getOutpoint();
+        return null;
+    }
 
-                    if (new Hash(outPoint.getHash().getBytes()).equals(hash)) {
-                        if (outPoint.getIndex() == index) {
-                            return transaction;
-                        }
-                    }
+    public static Transaction findActiveProposalsUsingOutpoint(Hash hash, int index) {
+        final  Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
+        try {
+            for (final Proposal proposal : activeProposals.values()) {
+                if (proposal.transaction != null) {
+                    if (doesTransactionUseOutpoint(proposal.transaction, hash, index))
+                        return proposal.transaction;
                 }
             }
         } finally {
@@ -2963,24 +3021,16 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
-
     public static CompletedTransaction findCompletedTransactionOutputWasSpentIn(Hash hash, int index) {
         final  Lock lock = activeAndCompletedMapLock.readLock();
 
         lock.lock();
         try {
             for (final CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-                final List<TransactionInput> inputs = completedTransaction.getTransaction().getInputs();
+                final Transaction transaction = completedTransaction.getTransaction();
 
-                for (TransactionInput input : inputs) {
-                    final TransactionOutPoint outPoint = input.getOutpoint();
-
-                    if (new Hash(outPoint.getHash().getBytes()).equals(hash)) {
-                        if (outPoint.getIndex() == index) {
-                            return completedTransaction;
-                        }
-                    }
-                }
+                if (doesTransactionUseOutpoint(transaction, hash, index))
+                    return completedTransaction;
             }
         } finally {
             lock.unlock();
