@@ -113,6 +113,8 @@ public class SharedCoin extends HttpServlet {
 
     public static final ExecutorService exec = Executors.newSingleThreadExecutor();
 
+    public static final ExecutorService tidyExec = Executors.newSingleThreadExecutor();
+
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
 
     private static final ReadWriteLock modifyPendingOffersLock = new ReentrantReadWriteLock();
@@ -547,19 +549,27 @@ public class SharedCoin extends HttpServlet {
 
                 String[] tmp_archived = null;
 
+                int batchSize = 250;
+                boolean lastBatch = false;
+
                 int ii = 0;
                 int iii = 0;
                 for (String _address : archived) {
                     if (ii == 0) {
-                        tmp_archived = new String[1000];
+                        tmp_archived = new String[batchSize];
                     }
 
                     tmp_archived[ii] = _address;
 
                     ++ii;
                     ++iii;
-                    if (ii == 1000 || iii == archived.length) {
-                        Map<String, Long> extraBalances = MyRemoteWallet.getMultiAddrBalances(tmp_archived);
+
+                    //Process inf batches of batchSize
+                    if (ii == batchSize || iii == archived.length) {
+                        if (iii == archived.length)
+                            lastBatch = true;
+
+                        final Map<String, Long> extraBalances = MyRemoteWallet.getMultiAddrBalances(tmp_archived);
 
                         for (String address : tmp_archived) {
                             if (address == null)
@@ -580,9 +590,14 @@ public class SharedCoin extends HttpServlet {
                         }
                         ii = 0;
                     }
+
+                    if (toRemove.size() > 0 || toUnarchive.size() > 0)
+                        break;
                 }
 
-                lastMinDeletionBlockHeight = minDeletionBlockHeight;
+                if (lastBatch) {
+                    lastMinDeletionBlockHeight = minDeletionBlockHeight;
+                }
             }
 
             Lock lock = updateLock.writeLock();
@@ -1046,10 +1061,9 @@ public class SharedCoin extends HttpServlet {
         timer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
-
                 final AtomicBoolean tidyIsRunning = new AtomicBoolean();
 
-                exec.execute(new Runnable() {
+                tidyExec.execute(new Runnable() {
                     @Override
                     public void run() {
                         if (tidyIsRunning.compareAndSet(false, true)) {

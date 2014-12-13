@@ -16,7 +16,7 @@ public class ContextListener implements ServletContextListener {
             e.printStackTrace();
         }
 
-        SharedCoin.exec.execute(new Runnable() {
+        SharedCoin.tidyExec.execute(new Runnable() {
             @Override
             public void run() {
                 try {
