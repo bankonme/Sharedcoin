@@ -79,7 +79,6 @@ public class MyRemoteWallet extends MyWallet {
         this.final_balance = final_balance;
     }
 
-
     public void setTotal_received(BigInteger total_received) {
         this.total_received = total_received;
     }
@@ -525,6 +524,10 @@ public class MyRemoteWallet extends MyWallet {
         String response = postAPI(url, params);
 
         Map<String, Object> top = (Map<String, Object>) JSONValue.parse(response);
+
+        if (top == null) {
+            return -1;
+        }
 
         JSONArray txs = (JSONArray) top.get("txs");
 

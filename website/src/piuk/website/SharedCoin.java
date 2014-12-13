@@ -1,6 +1,7 @@
 package piuk.website;
 
 import com.google.bitcoin.core.*;
+import jdk.nashorn.internal.runtime.Logging;
 import org.apache.commons.lang3.ArrayUtils;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
@@ -32,6 +33,7 @@ public class SharedCoin extends HttpServlet {
     final static Map<Long, Offer> pendingOffers = new HashMap<>();
     final static Map<Long, Proposal> activeProposals = new HashMap<>();
     final static Map<Hash, CompletedTransaction> recentlyCompletedTransactions = new HashMap<>();
+    final static Map<Long, Transaction> constructingTransactions = new ConcurrentHashMap<>();
 
     final static Set<String> usedAddresses = new HashSet<>();
 
@@ -67,7 +69,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumInputValue = COIN * 1000; //1000 BTC
     private static final long MaximumOfferNumberOfInputs = 20;
     private static final long MaximumOfferNumberOfOutputs = 20;
-    private static final long VarianceWhenMimicingOutputValue = 10; //10%
+    private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
     private static final long RecommendedMinIterations = 4;
     private static final long RecommendedMaxIterations = 10;
@@ -89,8 +91,8 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxNumberOfOutputsIncludingChange = 40; //The number of outputs to aim for in a single transaction including change outputs
     private static final long MaxNumberOfInputs = 100; //The soft max number of inputs to use for in a single transaction
 
-    private static final long ProposalExpiryTimeUnsigned = 240000; //4 Minutes
-    private static final long ProposalExpiryTimeSigned = 600000; //4 Minutes
+    private static final long ProposalExpiryTimeUnsigned = 120000; //2 Minutes
+    private static final long ProposalExpiryTimeSigned = 240000; //4 Minutes
 
     private static final long OfferExpiryTime = 600000; //10 Minutes
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
@@ -110,8 +112,6 @@ public class SharedCoin extends HttpServlet {
     public static final OurWallet ourWallet = new OurWallet();
 
     public static final ExecutorService exec = Executors.newSingleThreadExecutor();
-
-    public static final ExecutorService tidyExec = Executors.newSingleThreadExecutor();
 
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
 
@@ -1049,7 +1049,7 @@ public class SharedCoin extends HttpServlet {
 
                 final AtomicBoolean tidyIsRunning = new AtomicBoolean();
 
-                tidyExec.execute(new Runnable() {
+                exec.execute(new Runnable() {
                     @Override
                     public void run() {
                         if (tidyIsRunning.compareAndSet(false, true)) {
@@ -1162,11 +1162,11 @@ public class SharedCoin extends HttpServlet {
                 if (!didAlreadyFail)
                     continue;
 
-                System.out.println("Transaction Not Found " + completedTransaction.getTransaction().getHash() + ". Proposal Age " + age + "ms");
+                System.out.println("Transaction Not Found " + completedTransaction.getTransaction().getHash() + ". Proposal Age " + age + "ms completedTransaction.getPushCount() " + completedTransaction.getPushCount());
 
                 if (age > ProposalExpiryTimeFailedToBroadcast) {
                     removeRecentlyCompletedAndChildren(completedTransaction);
-                } else if (completedTransaction.getPushCount() < 3 && age < 21600000) {
+                } else if (completedTransaction.getPushCount() < 5) {
                     System.out.println("Re-broadcasting transaction");
 
                     try {
@@ -1343,11 +1343,11 @@ public class SharedCoin extends HttpServlet {
                         nInputs += offer.getOfferedOutpoints().size();
                         nOutputs += offer.getRequestedOutputs().size();
 
-                        if (nInputs >= Proposal.getTargets().get("number_of_inputs").longValue()) {
+                        if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
                             break;
                         }
 
-                        if (nOutputs >= Proposal.getTargets().get("number_of_outputs").longValue()) {
+                        if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
                             break;
                         }
 
@@ -1557,6 +1557,12 @@ public class SharedCoin extends HttpServlet {
 
             if (tx == null) {
                 throw new Exception("Sanity Check Failed. Tx Null");
+            }
+
+            final Set<TransactionOutPoint> outpoints = new HashSet<>();
+            for (TransactionInput input : tx.getInputs()) {
+                if (!outpoints.add(input.getOutpoint()))
+                    throw new Exception("Sanity Check Failed. Spent Same outpoint twice");
             }
 
             for (TransactionOutput output : tx.getOutputs()) {
@@ -2046,7 +2052,7 @@ public class SharedCoin extends HttpServlet {
 
                     selectedBeans.add(outpoint);
 
-                    if (selectedBeans.size() > Proposal.getTargets().get("number_of_inputs").longValue() && !allowUnconfirmed) {
+                    if (selectedBeans.size() > Proposal.getTargets().get("number_of_inputs_after_mix").longValue() && !allowUnconfirmed) {
                         break;
                     }
 
@@ -2317,7 +2323,8 @@ public class SharedCoin extends HttpServlet {
                         e.printStackTrace();
                     }
 
-                    if (getRequestedOutputCount() >= Proposal.getTargets().get("number_of_outputs").longValue() || getOfferedInputCount() >= Proposal.getTargets().get("number_of_inputs").longValue()) {
+                    if (getRequestedOutputCount() >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()
+                            || getOfferedInputCount() >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
                         fullBreak = true;
                         break;
                     }
@@ -2331,385 +2338,331 @@ public class SharedCoin extends HttpServlet {
                     break;
                 }
             }
+        }
 
-            try {
-                Iterator<MyTransactionOutPoint> it = allUnspent.iterator();
+        public MyTransactionOutPoint findSuitableOutpoint(List<MyTransactionOutPoint> allUnspent, long value) {
+            //So we add a new input to pay the fee
+            MyTransactionOutPoint suitableOutPoint = null;
+            List<MyTransactionOutPoint> tested = new ArrayList<>();
+            for (int ii = 0; ii < allUnspent.size(); ++ii) {
+                MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(value, allUnspent, tested, true);
 
-                if (allUnspent.size() > 0) {
-                    while (getRequestedOutputCount() < MinNumberOfOutputs && it.hasNext()) {
-                        Offer newOffer = new Offer();
-
-                        newOffer.feePercent = 0;
-
-                        Output outOne = new Output();
-
-                        outOne.excludeFromFee = false;
-                        outOne.script = Script.createOutputScript(ourWallet.getRandomAddress());
-                        outOne.value = it.next().getValue().longValue();
-
-                        if (outOne.value < MinimumNoneStandardOutputValue) {
-                            Logger.log(Logger.SeverityWARN, "getRequestedOutputCount() < MinNumberOfOutputs - outOne.value < MinimumNoneStandardOutputValue");
-                            continue;
-                        }
-
-                        newOffer.addRequestedOutput(outOne);
-
-                        if (!addInputsForValue(allUnspent, newOffer, outOne.value)) {
-                            Logger.log(Logger.SeverityWARN, "getRequestedOutputCount() < MinNumberOfOutputs - Error Adding inputs for offer");
-                            continue;
-                        }
-
-                        Logger.log(Logger.SeverityINFO, "mixWithOurWallet() Add Our Offer " + newOffer);
-
-                        if (!addOurOffer(newOffer)) {
-                            Logger.log(Logger.SeverityWARN, "getRequestedOutputCount() < MinNumberOfOutputs - Error Adding Our Offer");
-                            continue;
-                        }
-                    }
+                if (outpoint == null) {
+                    break;
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
+
+                tested.add(outpoint);
+
+                final Hash hash = new Hash(outpoint.getTxHash().getBytes());
+
+                if (findCompletedTransactionOutputWasSpentIn(hash, outpoint.getTxOutputN()) != null
+                        || isOutpointInUse(hash, outpoint.getTxOutputN())) {
+                    continue;
+                }
+
+                //If the fee is less than expected don't spend the outputs
+                CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
+                if (createdIn != null && !createdIn.isOkToSpend()) {
+                    continue;
+                }
+
+                if (outpoint.getValue().compareTo(BigInteger.valueOf(MinimumOutputValue)) > 0
+                        && outpoint.getValue().compareTo(BigInteger.valueOf(value)) > 0) {
+                    suitableOutPoint = outpoint;
+                    break;
+                }
             }
+
+            return suitableOutPoint;
         }
 
         public synchronized void constructTransaction(List<MyTransactionOutPoint> allUnspent) throws Exception {
 
             final Transaction transaction = new Transaction(NetworkParameters.prodNet());
 
-            List<Output> allRequestedOutputs = new ArrayList<>();
-            List<OutpointWithValue> allOfferedOutpoints = new ArrayList<>();
+            try {
+                constructingTransactions.put(getProposalID(), transaction);
 
-            for (Offer offer : offers) {
-                for (Output outputRequest : offer.getRequestedOutputs()) {
-                    allRequestedOutputs.add(outputRequest);
-                }
+                final List<Output> allRequestedOutputs = new ArrayList<>();
+                final List<OutpointWithValue> allOfferedOutpoints = new ArrayList<>();
 
-                for (OutpointWithValue outpoint : offer.getOfferedOutpoints()) {
-                    allOfferedOutpoints.add(outpoint);
-                }
-            }
-
-            for (Offer offer : ourOffers) {
-                for (Output outputRequest : offer.getRequestedOutputs()) {
-                    allRequestedOutputs.add(outputRequest);
-                }
-
-                for (OutpointWithValue outpoint : offer.getOfferedOutpoints()) {
-                    allOfferedOutpoints.add(outpoint);
-                }
-            }
-
-            //Randomize input order
-            Collections.shuffle(allRequestedOutputs);
-
-            //Randomize output order
-            Collections.shuffle(allOfferedOutpoints);
-
-            //Add all the outputs
-            for (Output outputRequest : allRequestedOutputs) {
-                TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, BigInteger.valueOf(outputRequest.value), outputRequest.script);
-
-                transaction.addOutput(out);
-            }
-
-            for (OutpointWithValue outpoint : allOfferedOutpoints) {
-                TransactionOutPoint outPoint = new MyTransactionOutPointWrapper(outpoint);
-
-                TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], outPoint);
-
-                input.outpoint = outPoint;
-
-                transaction.addInput(input);
-            }
-
-
-            BigInteger totalValueOutput = BigInteger.ZERO;
-            for (TransactionOutput output :transaction.getOutputs()) {
-                totalValueOutput = totalValueOutput.add(output.getValue());
-            }
-
-            BigInteger totalValueInput = BigInteger.ZERO;
-            for (TransactionInput input : transaction.getInputs()) {
-                totalValueInput = totalValueInput.add(input.getOutpoint().getConnectedOutput().getValue());
-            }
-
-            if (totalValueInput.compareTo(totalValueOutput) < 0) {
-                throw new Exception("totalValueInput < totalValueOutput");
-            }
-
-            BigInteger change = totalValueInput.subtract(totalValueOutput);
-
-            BigInteger feedPaid = BigInteger.ZERO;
-
-            //Check fee
-            int nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
-
-            BigInteger extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-            if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                change = change.subtract(extraFeeNeeded);
-                feedPaid = feedPaid.add(extraFeeNeeded);
-            }
-
-            final List<Offer> allOffers = new ArrayList<>(this.offers);
-
-            allOffers.addAll(this.ourOffers);
-
-            int cOfferOffset = 0;
-
-            final Set<Long> alreadyAddedDifferenceValues = new HashSet<>();
-
-            //All new outputs using the value difference between offers
-            //e.g. if offer 1 has a value of 5 BTC and offer 2 has a value of 6 BTC we add a 1 BTC random output
-            while (change.longValue() >= MinimumOutputValue) {
-                boolean allFailed = true;
-
-                for (Offer firstOffer : offers) {
-                    if (transaction.getOutputs().size() > MaxNumberOfOutputsIncludingChange || transaction.getInputs().size() > MaxNumberOfInputs) {
-                        break;
+                for (Offer offer : offers) {
+                    for (Output outputRequest : offer.getRequestedOutputs()) {
+                        allRequestedOutputs.add(outputRequest);
                     }
 
-                    if (nKB >= MaximumSoftTransactionSize) {
-                        break;
+                    for (OutpointWithValue outpoint : offer.getOfferedOutpoints()) {
+                        allOfferedOutpoints.add(outpoint);
+                    }
+                }
+
+                for (Offer offer : ourOffers) {
+                    for (Output outputRequest : offer.getRequestedOutputs()) {
+                        allRequestedOutputs.add(outputRequest);
                     }
 
-                    long firstOfferTotalOutputValue = firstOffer.getValueOutputRequested();
+                    for (OutpointWithValue outpoint : offer.getOfferedOutpoints()) {
+                        allOfferedOutpoints.add(outpoint);
+                    }
+                }
 
-                    boolean _break = false;
+                //Randomize input order
+                Collections.shuffle(allRequestedOutputs);
 
-                    for (int ii = 0; ii < allOffers.size(); ++ii) {
-                        final Offer secondOffer = allOffers.get((ii+cOfferOffset) % allOffers.size());
+                //Randomize output order
+                Collections.shuffle(allOfferedOutpoints);
 
-                        if (secondOffer.getOfferID() == firstOffer.getOfferID()) {
-                            continue;
-                        }
+                //Add all the outputs
+                for (Output outputRequest : allRequestedOutputs) {
+                    TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, BigInteger.valueOf(outputRequest.value), outputRequest.script);
 
-                        final long secondOfferTotalOutputValue = secondOffer.getValueOutputRequested();
+                    transaction.addOutput(out);
+                }
 
-                        long difference = secondOfferTotalOutputValue - firstOfferTotalOutputValue;
+                for (OutpointWithValue outpoint : allOfferedOutpoints) {
+                    TransactionOutPoint outPoint = new MyTransactionOutPointWrapper(outpoint);
 
-                        if (difference < 0) {
-                            difference = -difference;
-                        }
+                    TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], outPoint);
 
-                        if (difference < MinimumOutputValueExcludeFee) {
-                            continue;
-                        }
+                    transaction.addInput(input);
+                }
 
-                        final BigInteger differenceBN = BigInteger.valueOf(difference);
 
-                        //Make sure the difference is less than the change value (i.e. we have enough change to spend)
-                        if (differenceBN.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && differenceBN.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
+                BigInteger totalValueOutput = BigInteger.ZERO;
+                for (TransactionOutput output : transaction.getOutputs()) {
+                    totalValueOutput = totalValueOutput.add(output.getValue());
+                }
 
-                            if (!alreadyAddedDifferenceValues.add(differenceBN.longValue()))
+                BigInteger totalValueInput = BigInteger.ZERO;
+                for (TransactionInput input : transaction.getInputs()) {
+                    totalValueInput = totalValueInput.add(input.getOutpoint().getConnectedOutput().getValue());
+                }
+
+                if (totalValueInput.compareTo(totalValueOutput) < 0) {
+                    throw new Exception("totalValueInput < totalValueOutput");
+                }
+
+                BigInteger change = totalValueInput.subtract(totalValueOutput);
+
+                BigInteger feedPaid = BigInteger.ZERO;
+
+                //Check fee
+                int nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
+
+                BigInteger extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
+                if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
+                    change = change.subtract(extraFeeNeeded);
+                    feedPaid = feedPaid.add(extraFeeNeeded);
+                }
+
+                final List<Offer> allOffers = new ArrayList<>(this.offers);
+
+                allOffers.addAll(this.ourOffers);
+
+                final LinkedHashSet<Long> potentialDifferenceValues = new LinkedHashSet<>();
+
+                //Build a list of output values which force offers to SUM to the same value in many combinations
+                //e.g. if offer 1 has a value of 5 BTC and offer 2 has a value of 6 BTC we add a 1 BTC random output
+                for (int skipLastN = 0; skipLastN < MaximumOfferNumberOfInputs; ++skipLastN) {
+                    for (Offer firstOffer : allOffers) {
+                        final long firstOfferTotalOutputValue = firstOffer.getValueOutputRequested();
+
+                        for (Offer secondOffer : allOffers) {
+                            //Skip ourselves
+                            if (secondOffer.getOfferID() == firstOffer.getOfferID()) {
                                 continue;
-
-                            //If it is add an output with the difference value
-                            transaction.addOutput(differenceBN, ourWallet.getRandomAddress());
-                            change = change.subtract(differenceBN);
-
-                            //Check fee
-                            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
-                            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-
-                            if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                                change = change.subtract(extraFeeNeeded);
-                                feedPaid = feedPaid.add(extraFeeNeeded);
                             }
 
-                            allFailed = false;
+                            long secondOfferOutputValue = 0;
 
-                            _break = true;
+                            final List<Output> outputs = secondOffer.getRequestedOutputs();
+                            for (int ii = 0; ii < outputs.size() - skipLastN; ++ii) {
+                                secondOfferOutputValue += outputs.get(ii).value;
+                            }
 
+                            if (secondOfferOutputValue == 0) {
+                                continue;
+                            }
+
+                            final long difference = Math.abs(secondOfferOutputValue - firstOfferTotalOutputValue);
+
+                            //Ignore the difference if it is less that the standard output size
+                            if (difference <= MinimumNoneStandardOutputValue) {
+                                continue;
+                            }
+
+                            if (!potentialDifferenceValues.contains(difference)) {
+                                potentialDifferenceValues.add(difference);
+                            }
+                        }
+                    }
+                }
+
+                //Add new outputs using the value difference between offers
+                for (long difference : potentialDifferenceValues) {
+                    Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase difference " + difference);
+
+                    final BigInteger differenceBN = BigInteger.valueOf(difference);
+
+                    Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase change.subtract(BigInteger.valueOf(MinimumOutputValue)) " + change.subtract(BigInteger.valueOf(MinimumOutputValue)));
+
+                    //If we don't have enough change select a new input to pay for it
+                    if (change.subtract(BigInteger.valueOf(MinimumOutputValue)).longValue() <= difference) {
+
+                        final BigInteger valueNeeded = differenceBN.subtract(change.subtract(BigInteger.valueOf(MinimumOutputValue)));
+
+                        MyTransactionOutPoint suitableOutPoint = findSuitableOutpoint(allUnspent, valueNeeded.longValue());
+
+                        Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase suitableOutPoint " + suitableOutPoint + " valueNeeded " + valueNeeded);
+
+                        if (suitableOutPoint == null) {
+                            continue;
+                        }
+
+                        //Make sure the difference is less than the change value (i.e. we have enough change to spend)
+                        if (change.add(suitableOutPoint.getValue()).subtract(BigInteger.valueOf(MinimumOutputValue)).longValue() <= difference) {
+                            Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase still not suitable change");
+                            continue;
+                        }
+
+                        TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], suitableOutPoint);
+
+                        transaction.addInput(input);
+
+                        change = change.add(suitableOutPoint.getValue());
+                    }
+
+                    Logger.log(Logger.SeverityINFO, "constructTransaction() Adding difference output " + differenceBN);
+
+                    //If it is add an output with the difference value
+                    transaction.addOutput(differenceBN, ourWallet.getRandomAddress());
+                    change = change.subtract(differenceBN);
+
+                    //Check fee
+                    nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
+                    extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
+
+                    if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
+                        change = change.subtract(extraFeeNeeded);
+                        feedPaid = feedPaid.add(extraFeeNeeded);
+                    }
+                }
+
+                //Try cloning some offer outputs with variance
+                while (change.longValue() >= MinimumOutputValue) {
+                    boolean allFailed = true;
+
+                    for (Offer offer : offers) {
+                        if (transaction.getOutputs().size() > MaxNumberOfOutputsIncludingChange || transaction.getInputs().size() > MaxNumberOfInputs) {
+                            break;
+                        }
+
+                        if (nKB >= MaximumSoftTransactionSize) {
+                            break;
+                        }
+
+                        boolean _break = false;
+                        for (Output output : offer.requestedOutputs) {
+                            if (!output.isExcludeFromFee() && output.value <= change.longValue() - MinimumNoneStandardOutputValue) {
+                                double rand = (Math.random() - 0.5) * 2; //-1 to 1
+
+                                long randomVariance = (long) ((output.getValue() / 100d) * (VarianceWhenMimicingOutputValue * rand));
+
+                                BigInteger rounded = BigDecimal.valueOf(output.value + randomVariance).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(output.getValue()), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).toBigInteger();
+
+                                if (rounded.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && rounded.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
+
+                                    transaction.addOutput(rounded, ourWallet.getRandomAddress());
+                                    change = change.subtract(rounded);
+
+                                    //Check fee
+                                    nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
+                                    extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
+
+                                    if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
+                                        change = change.subtract(extraFeeNeeded);
+                                        feedPaid = feedPaid.add(extraFeeNeeded);
+                                    }
+
+                                    allFailed = false;
+
+                                    _break = true;
+
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (_break) {
                             break;
                         }
                     }
 
-                    if (_break) {
-                        break;
-                    }
-
-                    ++cOfferOffset;
-                }
-
-                if (allFailed) {
-                    break;
-                }
-            }
-
-            //Try cloning some offer outputs with variance
-            while (change.longValue() >= MinimumOutputValue) {
-                boolean allFailed = true;
-
-                for (Offer offer : offers) {
-                    if (transaction.getOutputs().size() > MaxNumberOfOutputsIncludingChange || transaction.getInputs().size() > MaxNumberOfInputs) {
-                        break;
-                    }
-
-                    if (nKB >= MaximumSoftTransactionSize) {
-                        break;
-                    }
-
-                    boolean _break = false;
-                    for (Output output : offer.requestedOutputs) {
-                        if (!output.isExcludeFromFee() && output.value <= change.longValue()-MinimumNoneStandardOutputValue) {
-                            double rand = (Math.random()-0.5)*2; //-1 to 1
-
-                            long randomVariance = (long)((output.getValue() / 100d) * (VarianceWhenMimicingOutputValue*rand));
-
-                            BigInteger rounded = BigDecimal.valueOf(output.value + randomVariance).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(output.getValue()), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).toBigInteger();
-
-                            if (rounded.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && rounded.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
-
-                                transaction.addOutput(rounded, ourWallet.getRandomAddress());
-                                change = change.subtract(rounded);
-
-                                //Check fee
-                                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
-                                extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-
-                                if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                                    change = change.subtract(extraFeeNeeded);
-                                    feedPaid = feedPaid.add(extraFeeNeeded);
-                                }
-
-                                allFailed = false;
-
-                                _break = true;
-
-                                break;
-                            }
-                        }
-                    }
-
-                    if (_break) {
+                    if (allFailed) {
                         break;
                     }
                 }
 
-                if (allFailed) {
-                    break;
-                }
-            }
 
-
-            //Check fee
-            nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size()*scriptSigSize)) / 1000d);
-            extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-
-            if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                change = change.subtract(extraFeeNeeded);
-                feedPaid = feedPaid.add(extraFeeNeeded);
-            }
-
-            if (change.compareTo(BigInteger.ZERO) > 0) {
                 //Check fee
-                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + ((transaction.getInputs().size()+1)*scriptSigSize)) / 1000d);
-                extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-
-                change = change.subtract(extraFeeNeeded);
-                feedPaid = feedPaid.add(extraFeeNeeded);
-            }
-
-            if (change.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
-                transaction.addOutput(change, ourWallet.getRandomAddress());
-            }
-
-            {
-                //Final fee check
-                nKB = (int)Math.ceil((transaction.bitcoinSerialize().length + ((transaction.getInputs().size()+1)*scriptSigSize)) / 1000d);
+                nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
                 extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
                 if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                    Logger.log(Logger.SeverityINFO, "Proposal " + getProposalID() + " extraFeeNeeded + (" + extraFeeNeeded +") > 0");
+                    change = change.subtract(extraFeeNeeded);
+                    feedPaid = feedPaid.add(extraFeeNeeded);
+                }
 
-                    //So we add a new input to pay the fee
-                    MyTransactionOutPoint suitableOutPoint = null;
-                    List<MyTransactionOutPoint> tested = new ArrayList<>();
-                    for (int ii = 0; ii < allUnspent.size(); ++ii) {
-                        MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(extraFeeNeeded.longValue(), allUnspent, tested, true);
+                if (change.compareTo(BigInteger.ZERO) > 0) {
+                    //Check fee
+                    nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + ((transaction.getInputs().size() + 1) * scriptSigSize)) / 1000d);
+                    extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
-                        if (outpoint == null) {
-                            break;
-                        }
+                    change = change.subtract(extraFeeNeeded);
+                    feedPaid = feedPaid.add(extraFeeNeeded);
+                }
 
-                        tested.add(outpoint);
+                if (change.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
+                    transaction.addOutput(change, ourWallet.getRandomAddress());
+                }
 
-                        //Check It hasn't already been spent
-                        if (findCompletedTransactionOutputWasSpentIn(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN()) != null
-                                || isOutpointInUse(new Hash(outpoint.getTxHash().getBytes()), outpoint.getTxOutputN())) {
-                            continue;
-                        }
+                {
+                    //Final fee check
+                    nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + ((transaction.getInputs().size() + 1) * scriptSigSize)) / 1000d);
+                    extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
 
-                        //If the fee is less than expected don't spend the outputs
-                        CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
-                        if (createdIn != null && !createdIn.isOkToSpend()) {
-                            continue;
-                        }
+                    if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
+                        Logger.log(Logger.SeverityINFO, "Proposal " + getProposalID() + " extraFeeNeeded + (" + extraFeeNeeded + ") > 0");
 
-                        if (outpoint.getValue().compareTo(BigInteger.valueOf(MinimumOutputValue)) > 0  && outpoint.getValue().compareTo(extraFeeNeeded) > 0) {
-                            suitableOutPoint = outpoint;
-                            break;
-                        }
-                    }
+                        //So we add a new input to pay the fee
+                        MyTransactionOutPoint suitableOutPoint = findSuitableOutpoint(allUnspent, extraFeeNeeded.longValue());
 
-                    if (suitableOutPoint != null) {
-                        final Offer payExtraFeeOffer = new Offer();
-
-                        {
-                            final OutpointWithValue outpoint = new OutpointWithValue();
-
-                            outpoint.script = suitableOutPoint.getScriptBytes();
-                            outpoint.hash = new Hash(suitableOutPoint.getTxHash().getBytes());
-                            outpoint.index = suitableOutPoint.getTxOutputN();
-                            outpoint.value = suitableOutPoint.getValue().longValue();
-
-                            payExtraFeeOffer.addOfferedOutpoint(outpoint);
-
-                            final Output outputContainer = new Output();
-
-                            outputContainer.script =  Script.createOutputScript(ourWallet.getRandomAddress());
-                            outputContainer.value = suitableOutPoint.getValue().subtract(extraFeeNeeded).longValue();
-                            outputContainer.excludeFromFee = true;
-
-                            payExtraFeeOffer.addRequestedOutput(outputContainer);
-
-                            Logger.log(Logger.SeverityINFO, "constructTransaction() Adding Our Offer " + payExtraFeeOffer);
-
-                            if(!addOurOffer(payExtraFeeOffer)) {
-                                throw new Exception("Error Adding Offer " + payExtraFeeOffer);
-                            }
-                        }
-
-                        //Add all the outputs
-                        for (Output outputRequest : payExtraFeeOffer.getRequestedOutputs()) {
-                            TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, BigInteger.valueOf(outputRequest.value), outputRequest.script);
+                        if (suitableOutPoint != null) {
+                            //Add all the output
+                            TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, suitableOutPoint.getValue().subtract(extraFeeNeeded), Script.createOutputScript(ourWallet.getRandomAddress()));
 
                             transaction.addOutput(out);
-                        }
 
-                        //Add all the inputs
-                        for (OutpointWithValue outpoint : payExtraFeeOffer.getOfferedOutpoints()) {
-                            TransactionOutPoint outPoint = new MyTransactionOutPointWrapper(outpoint);
-
-                            TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], outPoint);
-
-                            input.outpoint = outPoint;
+                            //Add the input
+                            TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], suitableOutPoint);
 
                             transaction.addInput(input);
                         }
                     }
                 }
+
+                Collections.shuffle(transaction.getInputs());
+
+                Collections.shuffle(transaction.getOutputs());
+
+                transaction.hash = null;
+
+                this.transaction = transaction;
+
+                this.notifyAll();
+            } finally {
+                constructingTransactions.keySet().remove(getProposalID());
             }
-
-            Collections.shuffle(transaction.getInputs());
-
-            Collections.shuffle(transaction.getOutputs());
-
-            transaction.hash = null;
-
-            this.transaction = transaction;
-
-            this.notifyAll();
         }
 
         public long getCreatedTime() {
@@ -2900,11 +2853,11 @@ public class SharedCoin extends HttpServlet {
 
 
     public static boolean isOutpointInUse(Hash hash, int index) {
-        return findOfferConsumingOutpoint(hash, index) != null;
+        return findOfferConsumingOutpoint(hash, index) != null || findConstructingTransactionUsingOutpoint(hash, index) != null;
     }
 
     public static boolean isAddressInUse(String address) throws ScriptException {
-        return findOfferConsumingAddress(address) != null;
+        return findOfferConsumingAddress(address) != null || findConstructingTransactionConsumingAddress(address) != null;
     }
 
     public static Offer findOfferConsumingAddress(String address) throws ScriptException {
@@ -2947,6 +2900,55 @@ public class SharedCoin extends HttpServlet {
 
         return null;
     }
+
+    public static Transaction findConstructingTransactionConsumingAddress(String address) throws ScriptException {
+        final  Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
+        try {
+            for (final Transaction transaction : constructingTransactions.values()) {
+                final List<TransactionInput> inputs = transaction.getInputs();
+
+                for (TransactionInput input : inputs) {
+                    final Address fromAddress = input.getFromAddress();
+
+                    if (fromAddress.toString().equals(address)) {
+                        return transaction;
+                    }
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+
+        return null;
+    }
+
+    public static Transaction findConstructingTransactionUsingOutpoint(Hash hash, int index) {
+        final  Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
+        try {
+            for (final Transaction transaction : constructingTransactions.values()) {
+                final List<TransactionInput> inputs = transaction.getInputs();
+
+                for (TransactionInput input : inputs) {
+                    final TransactionOutPoint outPoint = input.getOutpoint();
+
+                    if (new Hash(outPoint.getHash().getBytes()).equals(hash)) {
+                        if (outPoint.getIndex() == index) {
+                            return transaction;
+                        }
+                    }
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+
+        return null;
+    }
+
 
     public static CompletedTransaction findCompletedTransactionOutputWasSpentIn(Hash hash, int index) {
         final  Lock lock = activeAndCompletedMapLock.readLock();
@@ -2999,6 +3001,8 @@ public class SharedCoin extends HttpServlet {
 
         return results;
     }
+
+
 
 
     public static Offer findOfferConsumingOutpoint(Hash hash, int index) {
@@ -3344,7 +3348,7 @@ public class SharedCoin extends HttpServlet {
             return Collections.unmodifiableList(offeredOutpoints);
         }
 
-        public Collection<Output> getRequestedOutputs() {
+        public List<Output> getRequestedOutputs() {
             return Collections.unmodifiableList(requestedOutputs);
         }
 
@@ -3790,7 +3794,7 @@ public class SharedCoin extends HttpServlet {
                             }
 
                             if (!script.isSentToAddress()) {
-                                throw new Exception("Strange script output");
+                                throw new Exception("Strange script output " + script.toString());
                             }
 
                             //The client can cheat here by requesting the largest output be excluded even if it isn't the change address
@@ -3873,7 +3877,7 @@ public class SharedCoin extends HttpServlet {
                                 Logger.log(Logger.SeverityWARN, "Offer " + offer + " has conflicting offer " + existingConflictingOffer);
 
                                 if (offer.isTheSameAsOffer(existingConflictingOffer)) {
-                                    Logger.log(Logger.SeverityWARN, "Conflicting Offer Is Equal");
+                                    Logger.log(Logger.SeverityINFO, "Conflicting Offer Is Equal");
 
                                     obj.put("offer_id", existingConflictingOffer.getOfferID());
                                 } else {
