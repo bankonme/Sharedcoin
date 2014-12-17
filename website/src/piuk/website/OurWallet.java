@@ -39,7 +39,7 @@ public class OurWallet {
 
     private static long lastTidyWalletTime = 0;
     private static long lastCleanOutConfirmedTime = 0;
-    private static Set<Hash> lastTidyRecentlyCompletedKeySet = new HashSet<>();
+    private static Set<Hash> lastTidyRecentlyCompletedKeySet = new ConcurrentSkipListSet<>();
 
     private static final long CombineDustMinimumOutputSize = SharedCoin.MinimumNoneStandardOutputValue;
 
