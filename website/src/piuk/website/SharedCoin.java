@@ -1552,11 +1552,19 @@ public class SharedCoin extends HttpServlet {
         }
 
         public synchronized boolean sanityCheckBeforePush() throws Exception {
+
+            final Transaction tx = getTransaction();
+
+            if (tx == null) {
+                throw new Exception("Sanity Check Failed. Tx Null");
+            }
+
             long transactionFee = getTransactionFee();
 
-            int nKB = (int)Math.ceil(transaction.bitcoinSerialize().length / 1000d);
+            int nKB = (int)Math.ceil(tx.bitcoinSerialize().length / 1000d);
 
-            boolean feeOk = transactionFee >= (nKB)*TransactionFeePer1000Bytes.longValue() && transactionFee < (nKB+2)*TransactionFeePer1000Bytes.longValue();
+            boolean feeOk = transactionFee >= (nKB)*TransactionFeePer1000Bytes.longValue()
+                         && transactionFee < (nKB+4)*TransactionFeePer1000Bytes.longValue();
 
             if (!feeOk) {
                 throw new Exception("Sanity Check Failed. Unexpected Network Fee " + transactionFee + " != " +nKB + " * " + TransactionFeePer1000Bytes);
@@ -1564,12 +1572,6 @@ public class SharedCoin extends HttpServlet {
 
             if (nKB > MaximumHardTransactionSize) {
                 throw new Exception("Sanity Check Failed. Transaction too large");
-            }
-
-            final Transaction tx = getTransaction();
-
-            if (tx == null) {
-                throw new Exception("Sanity Check Failed. Tx Null");
             }
 
             final Set<TransactionOutPoint> outpoints = new HashSet<>();
