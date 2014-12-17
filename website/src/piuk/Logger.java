@@ -33,7 +33,7 @@ public class Logger {
             if (logInfo) {
                 System.out.println(new Date() + " INFO: " + args);
             }
-        } else if (log) {
+        } else if (log || severity == SeveritySeriousError) {
             System.out.println(args);
         }
     }

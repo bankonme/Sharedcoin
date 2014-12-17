@@ -33,6 +33,26 @@ public final class Util {
         return postURL(hostString, url.getQuery(), null);
     }
 
+    public static <T> List<List<T>> divideListInSublistsOfNSize(List<T> list, int n) {
+        final List<List<T>> container = new ArrayList<>();
+
+        List<T> cList = new ArrayList<>();
+        for (T o : list) {
+            cList.add(o);
+
+            if (cList.size() == n) {
+                container.add(cList);
+                cList = new ArrayList<>();
+            }
+        }
+
+        if (cList != null && cList.size() > 0) {
+            container.add(cList);
+        }
+
+        return container;
+    }
+
     public static <K, V extends Comparable<? super V>>
     SortedSet<Map.Entry<K, V>> entriesSortedByValues(Map<K, V> map) {
         SortedSet<Map.Entry<K, V>> sortedEntries = new TreeSet<Map.Entry<K, V>>(

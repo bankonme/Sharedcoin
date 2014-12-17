@@ -88,6 +88,16 @@ public class AdminServlet extends HttpServlet {
             return stdOut;
     }
 
+    public static synchronized void logDeletedPrivateKey(String address, ECKey key) throws IOException {
+        FileWriter fWriter = new FileWriter(DeletedPrivateKeysLogFilePath, true);
+
+        fWriter.write(address + " " + Base58.encode(key.getPrivKeyBytes()) + "\n");
+
+        fWriter.flush();
+
+        fWriter.close();
+    }
+
     public static String getRealIP(HttpServletRequest req) {
         if (req.getHeader("cf-connecting-ip") != null && Settings.instance().getBoolean("cloudflare_enabled"))
             return req.getHeader("cf-connecting-ip");
@@ -141,7 +151,7 @@ public class AdminServlet extends HttpServlet {
             long final_balance = Long.valueOf(entry.getValue().get("final_balance").toString());
             if (final_balance > 0) {
 
-                if (SharedCoin.ourWallet.isOurAddress(entry.getKey()))
+                if (OurWallet.getInstance().isOurAddress(entry.getKey()))
                     continue;
 
                 System.out.println("Final Balance " + final_balance + " address " + entry.getKey());
@@ -162,7 +172,7 @@ public class AdminServlet extends HttpServlet {
 
                 ECKey ecKey = decodeBase58PK(key);
 
-                if (!SharedCoin.ourWallet.addECKey(address, ecKey))
+                if (!OurWallet.getInstance().addECKey(address, ecKey))
                     throw new Exception("Error Importing ECKey");
 
             }
@@ -181,7 +191,7 @@ public class AdminServlet extends HttpServlet {
         List<Pair<String, String>> keys = new ArrayList<>();
 
         while(counter >= 0) {
-            ECKey key = SharedCoin.OurWallet.makeECKey(counter);
+            ECKey key = OurWallet.makeECKey(counter);
 
             final String PKString = Base58.encode(key.getPrivKeyBytes());
 
@@ -359,7 +369,7 @@ public class AdminServlet extends HttpServlet {
 
                     System.out.println(runBASH("cd ~/Sites/api.sharedcoin.com && ant stop-tomcat && ant start-tomcat"));
                 } else if (method.equals("tidy_wallet")) {
-                    SharedCoin.ourWallet.tidyTheWallet();
+                    OurWallet.getInstance().tidyTheWallet();
 
                     res.sendRedirect("/sharedcoin-admin");
                 } else if (method.equals("wallet_balance")) {
@@ -370,19 +380,15 @@ public class AdminServlet extends HttpServlet {
                     remoteWallet.doMultiAddr();
 
                     res.getWriter().print(remoteWallet.getFinal_balance());
-                } else if (method.equals("divide_large_outputs")) {
-                    SharedCoin.ourWallet.divideLargeOutputs();
-                } else if (method.equals("combine_dust")) {
-                    SharedCoin.ourWallet.combineDust();
                 } else if (method.equals("print_unspent")) {
 
-                    Lock lock = SharedCoin.ourWallet.updateLock.readLock();
+                    Lock lock = OurWallet.getInstance().updateLock.readLock();
 
                     List<MyTransactionOutPoint> outputs = null;
 
                     lock.lock();
                     try{
-                        MyWallet wallet = SharedCoin.ourWallet.getWallet();
+                        MyWallet wallet =  OurWallet.getInstance().getWalletNoLock();
 
                         res.getWriter().println("Active Addresses: " + StringUtils.join(wallet.getActiveAddresses(), "|"));
 
@@ -445,9 +451,11 @@ public class AdminServlet extends HttpServlet {
 
 
                     res.sendRedirect("/sharedcoin-admin");
+                } else if (method.equals("toggle_log")) {
+                    Logger.log = !Logger.log;
                 } else if (method.equals("toggle_info_log")) {
                     Logger.logInfo = !Logger.logInfo;
-                }  else if (method.equals("reload_settings")) {
+                } else if (method.equals("reload_settings")) {
                     Settings.reloadSettings();
                 } else {
                     throw new Exception("Unknown Method");

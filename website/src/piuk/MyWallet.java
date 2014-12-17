@@ -98,11 +98,11 @@ public class MyWallet {
         addKey(generateECKey(), "New");
     }
 
-    public BitcoinAddress getRandomActiveAddress() throws Exception {
-        List<BitcoinAddress> addresses = new ArrayList<>();
+    public String getRandomActiveAddress() throws Exception {
+        List<String> addresses = new ArrayList<>();
         for (Map<String, Object> key : getKeysMap()) {
             if (key.get("priv") != null && key.get("tag") == null) {
-                addresses.add(new BitcoinAddress((String) key.get("addr")));
+                addresses.add((String) key.get("addr"));
             }
         }
 

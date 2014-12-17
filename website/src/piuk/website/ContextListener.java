@@ -16,16 +16,8 @@ public class ContextListener implements ServletContextListener {
             e.printStackTrace();
         }
 
-        SharedCoin.tidyExec.execute(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    SharedCoin.ourWallet.tidyTheWallet();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-        });
+
+        OurWallet.scheduleTidyTasks();
 
         SharedCoin.exec.execute(new Runnable() {
             @Override
@@ -36,12 +28,5 @@ public class ContextListener implements ServletContextListener {
     }
 
     public void contextDestroyed(ServletContextEvent sce) {
-        System.out.println("contextDestroyed()");
-
-        try {
-            SharedCoin.save();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
     }
 }

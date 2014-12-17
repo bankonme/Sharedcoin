@@ -1,8 +1,6 @@
 package piuk.website;
 
 import com.google.bitcoin.core.*;
-import jdk.nashorn.internal.runtime.Logging;
-import org.apache.commons.lang3.ArrayUtils;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -22,7 +20,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -30,27 +27,21 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 @WebServlet({"/home"})
 public class SharedCoin extends HttpServlet {
 
-    final static Map<Long, Offer> pendingOffers = new HashMap<>();
+    final static Map<Long, Offer> pendingOffers = new ConcurrentHashMap<>();
     final static Map<Long, Proposal> activeProposals = new HashMap<>();
     final static Map<Hash, CompletedTransaction> recentlyCompletedTransactions = new HashMap<>();
     final static Map<Long, Transaction> constructingTransactions = new ConcurrentHashMap<>();
-    final static Map<String, CompletedTransaction> inputToRecentlyCompleted = new ConcurrentHashMap<>();
 
-    final static Set<String> usedAddresses = new HashSet<>();
+    final static Map<String, CompletedTransaction> _inputToRecentlyCompletedCache = new ConcurrentHashMap<>();
+    final static Map<String, CompletedTransaction> _outputAddressToRecentlyCompletedCache = new ConcurrentHashMap<>();
 
     public static int PKSeedCounter = 0;
 
     public static final long COIN = 100000000;
 
-    private static final int TargetNumberActiveAddresses = 800;
-    private static final int MaxActiveAddresses = 1000; //16KB
-
-    private static final int TidyWalletInterval = 120000; //2 minutes
-    private static long lastTidyTransactionTime = 0;
-    private static long lastPushedTransactionTime = 0;
     private static final long MinimumOutputValue = COIN / 100; //0.01 BTC
     private static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
-    private static final long MinimumNoneStandardOutputValue = 5460;
+    public static final long MinimumNoneStandardOutputValue = 5460;
     private static final long MinimumOutputValueExcludeFee = MinimumNoneStandardOutputValue;
 
     private static final long MaximumHardTransactionSize = 100; //100KB
@@ -80,12 +71,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxChangeSingleUnconfirmedInput = 50 * COIN;
     private static final long MaxChangeSingleConfirmedInput = 5 * COIN;
 
-    private static final long CombineDustMinimumOutputSize = MinimumNoneStandardOutputValue;
-
-    private static final long ForceDivideLargeOutputSize = 50 * COIN;
-    private static final long RandomDivideLargeOutputSize = 25 * COIN;
-
-    private static final long ProtocolVersion = 3;
+    public static final long ProtocolVersion = 3;
     private static final long MinSupportedVersion = 2;
 
     private static final long MinNumberOfOutputs = 2; //The number of outputs to aim for in a single transaction including change outputs
@@ -105,16 +91,10 @@ public class SharedCoin extends HttpServlet {
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
     public static final int scriptSigSize = 138; //107 compressed
+
     public static final BigInteger TransactionFeePer1000Bytes = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
 
-    private static boolean _scheduleDivideLargeOutputs = false;
-    private static boolean _scheduleCombineDust = true;
-
-    public static final OurWallet ourWallet = new OurWallet();
-
     public static final ExecutorService exec = Executors.newSingleThreadExecutor();
-
-    public static final ExecutorService tidyExec = Executors.newSingleThreadExecutor();
 
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
 
@@ -122,8 +102,19 @@ public class SharedCoin extends HttpServlet {
 
     private static final ReadWriteLock activeAndCompletedMapLock = new ReentrantReadWriteLock();
 
+    public static Set<Hash> getRecentlyCompletedTransactionHashes() {
+        Lock mapLock = activeAndCompletedMapLock.writeLock();
 
-    public static void putRecentlyCompleted(CompletedTransaction completedTransaction) {
+        mapLock.lock();
+        try {
+            return new HashSet<>(recentlyCompletedTransactions.keySet());
+        } finally {
+            mapLock.unlock();
+        }
+    }
+
+
+    public static void putRecentlyCompleted(CompletedTransaction completedTransaction) throws IOException {
 
         Lock mapLock = activeAndCompletedMapLock.writeLock();
 
@@ -132,12 +123,50 @@ public class SharedCoin extends HttpServlet {
             final Transaction transaction = completedTransaction.getTransaction();
 
             for (TransactionInput input : transaction.getInputs()) {
-                inputToRecentlyCompleted.put(input.getOutpoint().getHash() + ":" + input.getOutpoint().getIndex(), completedTransaction);
+                _inputToRecentlyCompletedCache.put(input.getOutpoint().getHash() + ":" + input.getOutpoint().getIndex(), completedTransaction);
+            }
+
+
+            for (TransactionOutput output : transaction.getOutputs()) {
+                try {
+                    String address = output.getScriptPubKey().getToAddress().toString();
+
+                    _outputAddressToRecentlyCompletedCache.put(address, completedTransaction);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
 
             recentlyCompletedTransactions.put(new Hash(transaction.getHash().getBytes()), completedTransaction);
         } finally {
             mapLock.unlock();
+        }
+    }
+
+    public static void saveRecentlyCompleted() throws IOException {
+        File tempFile = new File(AdminServlet.RecentlyCompletedTransactionsTempPath);
+
+        {
+            FileOutputStream fos = new FileOutputStream(tempFile);
+            ObjectOutputStream oos = new ObjectOutputStream(fos);
+
+            {
+                Lock lock = activeAndCompletedMapLock.readLock();
+
+                lock.lock();
+                try {
+                    oos.writeObject(new HashMap<>(recentlyCompletedTransactions));
+                } finally {
+                    lock.unlock();
+                }
+            }
+
+            oos.close();
+        }
+
+        {
+            File realFile = new File(AdminServlet.RecentlyCompletedTransactionsPath);
+            tempFile.renameTo(realFile);
         }
     }
 
@@ -149,8 +178,20 @@ public class SharedCoin extends HttpServlet {
         lock.lock();
         try {
             for (TransactionInput input : transaction.getInputs()) {
-                inputToRecentlyCompleted.keySet().remove(input.getOutpoint().getHash() + ":" + input.getOutpoint().getIndex());
+                _inputToRecentlyCompletedCache.keySet().remove(input.getOutpoint().getHash() + ":" + input.getOutpoint().getIndex());
             }
+
+
+            for (TransactionOutput output : transaction.getOutputs()) {
+                try {
+                    String address = output.getScriptPubKey().getToAddress().toString();
+
+                    _outputAddressToRecentlyCompletedCache.keySet().remove(address);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
 
             recentlyCompletedTransactions.keySet().remove(new Hash(transaction.getHash().getBytes()));
         } finally {
@@ -368,560 +409,6 @@ public class SharedCoin extends HttpServlet {
             return token;
         }
     }
-    public static class OurWallet {
-        private volatile MyRemoteWallet _cached = null;
-        public ReadWriteLock updateLock = new ReentrantReadWriteLock();
-
-        protected MyRemoteWallet getWallet() throws Exception {
-            if (_cached == null) {
-
-                String payload = MyRemoteWallet.getWalletPayload(AdminServlet.SharedWalletGUID, AdminServlet.SharedWalletSharedKey);
-
-                MyRemoteWallet remoteWallet = new MyRemoteWallet(payload, AdminServlet.SharedWalletPassword);
-
-                remoteWallet.setTemporySecondPassword(AdminServlet.SharedWalletSecondPassword);
-
-                _cached = remoteWallet;
-
-                return _cached;
-            } else {
-                return _cached;
-            }
-        }
-
-        public static ECKey makeECKey(int counter) throws Exception {
-            byte[] bytes = Util.SHA256(AdminServlet.PKSeed + counter).getBytes();
-
-            //Prppend a zero byte to make the biginteger unsigned
-            byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], bytes);
-
-            ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
-
-            return ecKey;
-        }
-
-        public ECKey makeECKey() throws Exception {
-            ++PKSeedCounter;
-
-            AdminServlet.writePKSeedCounter(PKSeedCounter);
-
-            return makeECKey(PKSeedCounter);
-        }
-
-        public boolean addECKey(String address, ECKey key) throws Exception {
-            Lock lock = updateLock.writeLock();
-
-            lock.lock();
-            try {
-                MyRemoteWallet wallet = getWallet();
-
-                String compressed = key.toAddressCompressed(NetworkParameters.prodNet()).toString();
-
-                String returnVal = wallet.addKey(key, null, !address.equals(compressed), "sharedcoin", "" + ProtocolVersion);
-
-                if (returnVal.equals(address)) {
-                    if (wallet.remoteSave(null)) {
-                        _cached = null;
-                        return true;
-                    } else {
-                        throw new Exception("Error Saving Wallet");
-                    }
-                }
-
-            } finally {
-                lock.unlock();
-            }
-
-            return false;
-        }
-
-        public boolean isOurAddress(String address) throws Exception {
-            Lock lock = updateLock.readLock();
-
-            lock.lock();
-            try{
-                MyWallet wallet = getWallet();
-
-                return wallet.isMine(address);
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        public List<MyTransactionOutPoint> getUnspentOutputs(int limit) throws Exception {
-            Lock lock = updateLock.readLock();
-
-            lock.lock();
-            try{
-                MyWallet wallet = getWallet();
-
-                try {
-                    return MyRemoteWallet.getUnspentOutputPoints(wallet.getActiveAddresses(), 0, limit);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            } finally {
-                lock.unlock();
-            }
-
-            return new ArrayList<>();
-        }
-
-        public List<MyTransactionOutPoint> getUnspentOutputsCreatedByTransaction(MyTransaction transaction) throws Exception {
-
-            Lock lock = updateLock.readLock();
-
-            lock.lock();
-            try{
-                MyWallet wallet = getWallet();
-
-                Set<Address> addresses = new HashSet<>();
-
-                for (TransactionOutput output : transaction.getOutputs()) {
-                    Address address = ((MyTransactionOutput)output).getToAddress();
-                    if (wallet.isMine(address.toString())) {
-                        addresses.add(address);
-                    }
-                }
-
-                String[] array = new String[addresses.size()];
-
-                int ii = 0;
-                for (Address address : addresses) {
-                    array[ii] = address.toString();
-                    ++ii;
-                }
-
-                try {
-                    return MyRemoteWallet.getUnspentOutputPoints(array, 0, 500);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            } finally {
-                lock.unlock();
-            }
-
-            return new ArrayList<>();
-        }
-
-        private Address getRandomAddressNoLock() throws Exception {
-
-            MyWallet wallet = getWallet();
-
-            Set<String> activeAddresses = new HashSet<>();
-            for (String address : wallet.getActiveAddresses()) {
-                activeAddresses.add(address);
-            }
-
-            activeAddresses.removeAll(usedAddresses);
-
-            String selectedAddress;
-            if (activeAddresses.size() > 0) {
-                selectedAddress = activeAddresses.iterator().next();
-            } else {
-                selectedAddress = wallet.getRandomActiveAddress().toString();
-            }
-
-            usedAddresses.add(selectedAddress);
-
-            return new Address(NetworkParameters.prodNet(), selectedAddress);
-        }
-
-        public Address getRandomAddress() throws Exception {
-            Lock lock = updateLock.readLock();
-
-            lock.lock();
-            try{
-                return getRandomAddressNoLock();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        private synchronized void logDeletedPrivateKey(String address, ECKey key) throws IOException {
-            FileWriter fWriter = new FileWriter(AdminServlet.DeletedPrivateKeysLogFilePath, true);
-
-            fWriter.write(address + " " + Base58.encode(key.getPrivKeyBytes()) + "\n");
-
-            fWriter.flush();
-
-            fWriter.close();
-        }
-
-        private  static int lastMinDeletionBlockHeight = 0;
-
-        public void removeConfirmedArchivedWallet(int latestBlockHeight) throws Exception {
-
-            List<String> toUnarchive = new ArrayList<>();
-            List<String> toRemove = new ArrayList<>();
-
-            {
-                if (latestBlockHeight == 0) {
-                    throw new Exception("latestBlockHeight == 0");
-                }
-
-                int minDeletionBlockHeight = latestBlockHeight - 6;
-
-                if (minDeletionBlockHeight == lastMinDeletionBlockHeight) {
-                    return;
-                }
-
-                MyRemoteWallet wallet = getWallet();
-
-                String[] archived = wallet.getArchivedAddresses();
-
-                String[] tmp_archived = null;
-
-                int batchSize = 250;
-                boolean lastBatch = false;
-
-                int ii = 0;
-                int iii = 0;
-                for (String _address : archived) {
-                    if (ii == 0) {
-                        tmp_archived = new String[batchSize];
-                    }
-
-                    tmp_archived[ii] = _address;
-
-                    ++ii;
-                    ++iii;
-
-                    //Process inf batches of batchSize
-                    if (ii == batchSize || iii == archived.length) {
-                        if (iii == archived.length)
-                            lastBatch = true;
-
-                        final Map<String, Long> extraBalances = MyRemoteWallet.getMultiAddrBalances(tmp_archived);
-
-                        for (String address : tmp_archived) {
-                            if (address == null)
-                                continue;
-
-                            Long balance = extraBalances.get(address);
-
-                            if (balance != null && balance > 0) {
-                                toUnarchive.add(address);
-                            } else if (balance != null && balance == 0) {
-
-                                long blockHeight = MyRemoteWallet.getMinConfirmingBlockHeightForTransactionConfirmations(address);
-
-                                if (blockHeight == -1 || (blockHeight > 0 && blockHeight <= minDeletionBlockHeight)) {
-                                    toRemove.add(address);
-                                }
-                            }
-                        }
-                        ii = 0;
-                    }
-
-                    if (toRemove.size() > 0 || toUnarchive.size() > 0)
-                        break;
-                }
-
-                if (lastBatch) {
-                    lastMinDeletionBlockHeight = minDeletionBlockHeight;
-                }
-            }
-
-            Lock lock = updateLock.writeLock();
-
-            lock.lock();
-            try{
-                boolean didModify = false;
-
-                MyRemoteWallet wallet = getWallet();
-
-                for (String address : toUnarchive) {
-                    wallet.setTag(address, 0);
-
-                    didModify = true;
-                }
-
-                for (String address : toRemove) {
-                    //Log before deleting
-                    logDeletedPrivateKey(address, wallet.getECKey(address));
-
-                    //And remove it
-                    wallet.removeAddressAndKey(address);
-
-                    didModify = true;
-                }
-
-                if (didModify) {
-                    if (!wallet.remoteSave(null)) {
-                        throw new Exception("Error Saving Wallet");
-                    }
-                    _cached = null;
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-
-        public synchronized void combineDust() throws Exception {
-            Lock lock = updateLock.writeLock();
-
-            lock.lock();
-            try{
-                //Do multiaddr
-                //Archive ZERO balance addresses with more than one transaction
-                //Delete archived addresses with transactions > 6 confirmations
-
-                MyRemoteWallet wallet = getWallet();
-
-                for (int ii = 0; ii < 2; ++ii) {
-                    try {
-                        wallet.doMultiAddr();
-
-                        break;
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                }
-
-                final List<String> toCombineAddresses = new ArrayList<>();
-
-                BigInteger value = BigInteger.ZERO;
-
-
-                boolean addedAddressForFee = false;
-                for (String address : wallet.getActiveAddresses()) {
-                    final BigInteger balance = wallet.getBalance(address);
-
-                    if (!addedAddressForFee && balance.compareTo(BigInteger.valueOf(COIN)) >= 0) {
-
-                        if (isAddressInUse(address)) {
-                            continue;
-                        }
-
-                        toCombineAddresses.add(address);
-
-                        addedAddressForFee = true;
-
-                        value = value.add(balance);
-
-                    } else if (balance.compareTo(BigInteger.ZERO) > 0 && balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0 && toCombineAddresses.size() < 10) {
-
-                        Logger.log(Logger.SeverityINFO, "Dust Address " + address + " " + balance);
-
-                        if (isAddressInUse(address)) {
-                            continue;
-                        }
-
-                        toCombineAddresses.add(address);
-
-                        value = value.add(balance);
-                    }
-                }
-
-                if (toCombineAddresses.size() <= 2)
-                    return;
-
-                if (toCombineAddresses.size() >= 10)
-                    _scheduleCombineDust = true;
-
-                final BigInteger fee = TransactionFeePer1000Bytes.multiply(BigInteger.valueOf(Math.round(toCombineAddresses.size()/1.5)));
-
-
-                final String destination = getRandomAddressNoLock().toString();
-
-                Logger.log(Logger.SeverityWARN, "combineDust() Send From [" + toCombineAddresses + "] to destination " + destination);
-
-                if (wallet.send(toCombineAddresses.toArray(new String[] {}), destination, value.divide(BigInteger.valueOf(2)), fee)) {
-                    System.out.println("Combine Dust wallet.send returned true");
-                } else {
-                    System.out.println("Combine Dust wallet.send returned false");
-
-                }
-
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        public synchronized void divideLargeOutputs() throws Exception {
-            Lock lock = updateLock.writeLock();
-
-            lock.lock();
-            try{
-                //Do multiaddr
-                //Archive ZERO balance addresses with more than one transaction
-                //Delete archived addresses with transactions > 6 confirmations
-
-                MyRemoteWallet wallet = getWallet();
-
-                for (int ii = 0; ii < 2; ++ii) {
-                    try {
-                        wallet.doMultiAddr();
-
-                        break;
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                }
-
-                for (String address : wallet.getActiveAddresses()) {
-                    BigInteger balance = wallet.getBalance(address);
-
-                    if (balance.compareTo(BigInteger.valueOf(ForceDivideLargeOutputSize)) >= 0) {
-                        _scheduleDivideLargeOutputs = true;
-                    }
-
-                    if (balance.longValue() >= ForceDivideLargeOutputSize || (Math.random() > 0.75 && balance.longValue() >= RandomDivideLargeOutputSize)) {
-
-                        long split = (long)((balance.longValue() / 2) * (Math.random()+0.5));
-
-                        String destination = getRandomAddressNoLock().toString();
-
-                        Logger.log(Logger.SeverityWARN, "divideLargeOutputs() Send From [" + address + "] to destination " + destination +" value " + split);
-
-                        if (isAddressInUse(address)) {
-                            continue;
-                        }
-
-
-                        wallet.send(new String[]{address}, destination, BigInteger.valueOf(split), TransactionFeePer1000Bytes);
-
-                        break;
-                    }
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        public void tidyTheWallet() throws Exception {
-            Lock lock = updateLock.writeLock();
-
-            int latestBlockHeight = 0;
-
-            lock.lock();
-            try{
-                //Do multiaddr
-                //Archive ZERO balance addresses with more than one transaction
-                //Delete archived addresses with transactions > 6 confirmations
-
-                final MyRemoteWallet wallet = getWallet();
-
-                for (int ii = 0; ii < 2; ++ii) {
-                    try {
-                        wallet.doMultiAddr();
-
-                        break;
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                }
-
-                boolean didModify = false;
-
-                try {
-                    if (wallet.getBalance().compareTo(BigInteger.ZERO) == 0) {
-                        throw new Exception("Tidy Wallet: Wallet Balance Zero");
-                    }
-
-                    //Archive any 0 balance addreses
-                    for (String address : wallet.getActiveAddresses()) {
-                        BigInteger balance = wallet.getBalance(address);
-                        int n_tx = wallet.getNtx(address);
-
-                        if (n_tx > 0) {
-                            usedAddresses.add(address);
-                        }
-
-                        if (balance.compareTo(BigInteger.valueOf(ForceDivideLargeOutputSize)) >= 0) {
-                            _scheduleDivideLargeOutputs = true;
-                        }
-
-                        if (balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0) {
-                            _scheduleCombineDust = true;
-                        }
-
-                        if (n_tx > 0 && balance.compareTo(BigInteger.ZERO) == 0 && !isAddressTargetOfAnActiveOutput(address)) {
-                            //Logger.log(Logger.SeverityWARN, "Tidy Wallet: Archive Address " + address + " ntx " + n_tx);
-
-                            didModify = true;
-
-                            wallet.setTag(address, 2);
-                        }
-                    }
-
-                    latestBlockHeight = wallet.getLatestBlock().getHeight();
-
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-
-                String[] allActiveAddresses = wallet.getActiveAddresses();
-
-                if (allActiveAddresses.length > MaxActiveAddresses) {
-                    Logger.log(Logger.SeverityWARN, "Tidy Wallet: Too Many Active Addresses " + allActiveAddresses.length + " new addresses");
-
-                    {
-                        int nToArchive = allActiveAddresses.length - MaxActiveAddresses;
-                        int ii = 0;
-                        for (String address : allActiveAddresses) {
-                            if (ii >= nToArchive) {
-                                break;
-                            }
-
-                            BigInteger balance = wallet.getBalance(address);
-
-                            if (balance.compareTo(BigInteger.ZERO) == 0) {
-                                wallet.setTag(address, 2);
-
-                                didModify = true;
-
-                                ++ii;
-                            }
-                        }
-                    }
-
-                    allActiveAddresses = wallet.getActiveAddresses();
-
-                    if (allActiveAddresses.length > MaxActiveAddresses) {
-                        Logger.log(Logger.SeverityWARN, "Tidy Wallet: Still Too Many Active Addresses " + allActiveAddresses.length + " new addresses");
-
-                        for (int ii = MaxActiveAddresses-1; ii < allActiveAddresses.length; ++ii) {
-                            String address = allActiveAddresses[ii];
-
-                            wallet.setTag(address, 2);
-
-                            didModify = true;
-                        }
-
-                    }
-                } else {
-                    //Generate New Addresses To Fill the wallet
-                    int nAddressToCreate = TargetNumberActiveAddresses - allActiveAddresses.length;
-
-                    //Logger.log(Logger.SeverityWARN, "Tidy Wallet: Generate " + nAddressToCreate + " new addresses");
-
-                    for (int ii = 0; ii < nAddressToCreate; ++ii) {
-                        ECKey key = makeECKey();
-
-                        didModify = true;
-
-                        wallet.addKey(key, null, Math.random() >= 0.5, "sharedcoin", "" + ProtocolVersion);
-                    }
-                }
-
-                if (didModify) {
-                    if (!wallet.remoteSave(null)) {
-                        throw new Exception("Error Saving Wallet");
-                    }
-                    _cached = null;
-                }
-            } finally {
-                lock.unlock();
-            }
-
-            if (latestBlockHeight > 0) {
-                removeConfirmedArchivedWallet(latestBlockHeight);
-            }
-        }
-    }
 
     public static int numberOfDecimalPlaces(double input) {
         String text = Double.toString(Math.abs(input));
@@ -944,33 +431,6 @@ public class SharedCoin extends HttpServlet {
         run();
     }
 
-    public static void save() throws IOException {
-        File tempFile = new File(AdminServlet.RecentlyCompletedTransactionsTempPath);
-
-        {
-            FileOutputStream fos = new FileOutputStream(tempFile);
-            ObjectOutputStream oos = new ObjectOutputStream(fos);
-
-            {
-                Lock lock = activeAndCompletedMapLock.readLock();
-
-                lock.lock();
-                try {
-                    oos.writeObject(new HashMap<>(recentlyCompletedTransactions));
-                } finally {
-                    lock.unlock();
-                }
-            }
-
-            oos.close();
-        }
-
-        {
-            File realFile = new File(AdminServlet.RecentlyCompletedTransactionsPath);
-            tempFile.renameTo(realFile);
-        }
-    }
-
     public static void restore() throws IOException, ClassNotFoundException {
         PKSeedCounter = AdminServlet.readPKSeedCounter();
 
@@ -990,23 +450,16 @@ public class SharedCoin extends HttpServlet {
     }
 
     public void addOfferToPending(Offer offer) throws Exception {
-        Lock lock = modifyPendingOffersLock.writeLock();
+        //Finalize the inputs and outputs
+        offer.requestedOutputs = Collections.unmodifiableList(offer.requestedOutputs);
+        offer.offeredOutpoints = Collections.unmodifiableList(offer.offeredOutpoints);
 
-        lock.lock();
-        try{
-            //Finalize the inputs and outputs
-            offer.requestedOutputs = Collections.unmodifiableList(offer.requestedOutputs);
-            offer.offeredOutpoints = Collections.unmodifiableList(offer.offeredOutpoints);
-
-            synchronized (pendingOffers) {
-                if (pendingOffers.containsKey(offer.getOfferID())) {
-                    throw new Exception("Duplicate Offer ID");
-                }
-
-                pendingOffers.put(offer.getOfferID(), offer);
+        synchronized (pendingOffers) {
+            if (pendingOffers.containsKey(offer.getOfferID())) {
+                throw new Exception("Duplicate Offer ID");
             }
-        } finally {
-            lock.unlock();
+
+            pendingOffers.put(offer.getOfferID(), offer);
         }
     }
 
@@ -1075,47 +528,6 @@ public class SharedCoin extends HttpServlet {
             }
         }, 1000, 1000);
 
-        timer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                final AtomicBoolean tidyIsRunning = new AtomicBoolean();
-
-                tidyExec.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (tidyIsRunning.compareAndSet(false, true)) {
-                            try {
-                                if (_scheduleDivideLargeOutputs) {
-                                    _scheduleDivideLargeOutputs = false;
-                                    ourWallet.divideLargeOutputs();
-                                }
-
-                                if (_scheduleCombineDust) {
-                                    _scheduleCombineDust = false;
-                                    ourWallet.combineDust();
-                                }
-
-                                if (lastTidyTransactionTime != lastPushedTransactionTime) {
-                                    lastTidyTransactionTime = lastPushedTransactionTime;
-                                    ourWallet.tidyTheWallet();
-                                }
-
-                            } catch (Exception e) {
-                                e.printStackTrace();
-                            } finally {
-                                tidyIsRunning.set(false);
-                            }
-                        }
-
-                        try {
-                            SharedCoin.save();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                });
-            }
-        }, TidyWalletInterval, TidyWalletInterval);
     }
 
     private static void removeRecentlyCompletedAndChildren(CompletedTransaction completedTransaction) {
@@ -1330,179 +742,184 @@ public class SharedCoin extends HttpServlet {
 
 
     public synchronized static void runCreateProposals() throws Exception {
-        Lock lock = modifyPendingOffersLock.writeLock();
+        Proposal proposal = new Proposal();
 
-        lock.lock();
-        try{
-            Proposal proposal = new Proposal();
+        synchronized (proposal) {
+            {
+                int nInputs = 0;
+                int nOutputs = 0;
+                Set<String> allDestinationAddresses = new HashSet<>();
 
-            synchronized (proposal) {
-                {
-                    int nInputs = 0;
-                    int nOutputs = 0;
-                    Set<String> allDestinationAddresses = new HashSet<>();
+                //Set used to make sure no two offers are combined which contain inputs from the same transaction.
+                Set<Hash> inputTransactionHashes = new HashSet<>();
 
-                    //Set used to make sure no two offers are combined which contain inputs from the same transaction.
-                    Set<Hash> inputTransactionHashes = new HashSet<>();
-
-                    final List<Offer> offers;
-                    synchronized (pendingOffers) {
-                        offers = new ArrayList<>(pendingOffers.values());
-                    }
-
-
-                    for (Offer offer : offers) {
-
-                        nInputs += offer.getOfferedOutpoints().size();
-                        nOutputs += offer.getRequestedOutputs().size();
-
-                        if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
-                            break;
-                        }
-
-                        if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
-                            break;
-                        }
-
-                        if (proposal.getOffers().size() >= Proposal.getTargets().get("number_of_offers").longValue()) {
-                            break;
-                        }
-
-                        //Encure All Output addresses are unique
-                        Set<String> thisOfferDestinationAddresses = offer.getRequestedOutputAddresses();
-                        if (!Collections.disjoint(allDestinationAddresses, offer.getRequestedOutputAddresses())) {
-                            //All output addresses must be unique
-                            //If there are any duplicates don't put them in the same proposal
-                            continue;
-                        } else {
-                            allDestinationAddresses.addAll(thisOfferDestinationAddresses);
-                        }
-
-                        Set<Hash> offerInputTransactionHashes = new HashSet<>();
-                        for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                            offerInputTransactionHashes.add(outpointWithValue.getHash());
-                        }
-
-                        //Ensure all input transactions are unique
-                        if (!Collections.disjoint(inputTransactionHashes, offerInputTransactionHashes)) {
-                            //All output addresses must be unique
-                            //If there are any duplicates don't put them in the same proposal
-                            continue;
-                        } else {
-                            //If none are contained add them to the set
-                            inputTransactionHashes.addAll(offerInputTransactionHashes);
-                        }
-
-                        boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
-
-                        if (!hasFailedToSign) {
-                            if (!proposal.addOffer(offer)) {
-                                throw new Exception("Error Adding Offer To Proposal");
-                            }
-                        } else if (proposal.getOffers().size() == 0) {
-                            //We only allow IPs that have failed to sign to join a proposal on their own
-                            //That way it doesn't affect other users
-
-                            if (!proposal.addOffer(offer)) {
-                                throw new Exception("Error Adding Offer To Proposal");
-                            }
-
-                            break;
-                        } else {
-                            continue;
-                        }
-                    }
+                final List<Offer> offers;
+                synchronized (pendingOffers) {
+                    offers = new ArrayList<>(pendingOffers.values());
                 }
 
-                if (proposal.getOffers().size() == 0) {
-                    return;
-                }
 
+                for (Offer offer : offers) {
+
+                    nInputs += offer.getOfferedOutpoints().size();
+                    nOutputs += offer.getRequestedOutputs().size();
+
+                    if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
+                        break;
+                    }
+
+                    if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
+                        break;
+                    }
+
+                    if (proposal.getOffers().size() >= Proposal.getTargets().get("number_of_offers").longValue()) {
+                        break;
+                    }
+
+                    //Encure All Output addresses are unique
+                    Set<String> thisOfferDestinationAddresses = offer.getRequestedOutputAddresses();
+                    if (!Collections.disjoint(allDestinationAddresses, offer.getRequestedOutputAddresses())) {
+                        //All output addresses must be unique
+                        //If there are any duplicates don't put them in the same proposal
+                        continue;
+                    } else {
+                        allDestinationAddresses.addAll(thisOfferDestinationAddresses);
+                    }
+
+                    Set<Hash> offerInputTransactionHashes = new HashSet<>();
+                    for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                        offerInputTransactionHashes.add(outpointWithValue.getHash());
+                    }
+
+                    //Ensure all input transactions are unique
+                    if (!Collections.disjoint(inputTransactionHashes, offerInputTransactionHashes)) {
+                        //All output addresses must be unique
+                        //If there are any duplicates don't put them in the same proposal
+                        continue;
+                    } else {
+                        //If none are contained add them to the set
+                        inputTransactionHashes.addAll(offerInputTransactionHashes);
+                    }
+
+                    boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
+
+                    if (!hasFailedToSign) {
+                        if (!proposal.addOffer(offer)) {
+                            throw new Exception("Error Adding Offer To Proposal");
+                        }
+                    } else if (proposal.getOffers().size() == 0) {
+                        //We only allow IPs that have failed to sign to join a proposal on their own
+                        //That way it doesn't affect other users
+
+                        if (!proposal.addOffer(offer)) {
+                            throw new Exception("Error Adding Offer To Proposal");
+                        }
+
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
+            }
+
+            if (proposal.getOffers().size() == 0) {
+                return;
+            }
+
+            {
+                Lock mapLock = activeAndCompletedMapLock.readLock();
+
+                mapLock.lock();
+                try {
+                    if (activeProposals.containsKey(proposal.getProposalID()))
+                        throw new Exception("Duplicate Proposal ID");
+                } finally {
+                    mapLock.unlock();
+                }
+            }
+
+            //Finalize the user offers
+            proposal.offers = Collections.unmodifiableList(proposal.offers);
+
+            Lock walletLock = OurWallet.getInstance().updateLock.writeLock();
+
+            walletLock.lock();
+            try {
+                final List<MyTransactionOutPoint> allUnspentPreFilter = OurWallet.getInstance().getUnspentOutputs(1000);
+
+                Logger.log(Logger.SeverityINFO, "Put Active Proposal " + proposal.getProposalID());
+
+                //Promote the proposal to active
                 {
-                    Lock mapLock = activeAndCompletedMapLock.readLock();
+                    Lock mapLock = activeAndCompletedMapLock.writeLock();
 
                     mapLock.lock();
                     try {
-                        if (activeProposals.containsKey(proposal.getProposalID()))
-                            throw new Exception("Duplicate Proposal ID");
+                        activeProposals.put(proposal.getProposalID(), proposal);
                     } finally {
                         mapLock.unlock();
                     }
                 }
 
-                //Finalize the user offers
-                proposal.offers = Collections.unmodifiableList(proposal.offers);
-
-                Lock walletLock = ourWallet.updateLock.readLock();
-                Lock offersLock = modifyPendingOffersLock.writeLock();
-
-                walletLock.lock();
-                offersLock.lock();
-                try {
-                    final List<MyTransactionOutPoint> allUnspentPreFilter = ourWallet.getUnspentOutputs(1000);
-
-                    Logger.log(Logger.SeverityINFO, "Put Active Proposal " + proposal.getProposalID());
-
-                    //Promote the proposal to active
-                    {
-                        Lock mapLock = activeAndCompletedMapLock.writeLock();
-
-                        mapLock.lock();
-                        try {
-                            activeProposals.put(proposal.getProposalID(), proposal);
-                        } finally {
-                            mapLock.unlock();
-                        }
-                    }
-
-                    //Remove the offer from pending
-                    synchronized (pendingOffers) {
-                        pendingOffers.values().removeAll(proposal.getOffers());
-                    }
-
-                    proposal.mixWithOurWallet(allUnspentPreFilter);
-
-                    if (proposal.getRequestedOutputCount() < MinNumberOfOutputs) {
-                        throw new Exception("proposal.getRequestedOutputCount() ( " + proposal.getRequestedOutputCount() + ") < MinNumberOfOutputs (" + MinNumberOfOutputs + ")");
-                    }
-
-                    //TODO recover if these fail
-                    proposal.constructTransaction(allUnspentPreFilter);
-
-                    //Finalize our offers
-                    proposal.ourOffers = Collections.unmodifiableList(proposal.ourOffers);
-
-                } catch (Exception e) {
-                    {
-                        Lock mapLock = activeAndCompletedMapLock.writeLock();
-
-                        mapLock.lock();
-                        try {
-                            activeProposals.keySet().remove(proposal.getProposalID());
-                        } finally {
-                            mapLock.unlock();
-                        }
-                    }
-
-                    synchronized (pendingOffers) {
-                        pendingOffers.values().removeAll(proposal.getOffers());
-                    }
-
-                    throw e;
-                } finally {
-                    offersLock.unlock();
-                    walletLock.unlock();
+                //Remove the offer from pending
+                synchronized (pendingOffers) {
+                    pendingOffers.values().removeAll(proposal.getOffers());
                 }
 
-                //Wake up the long pollers
-                for (Offer offer : proposal.getOffers()) {
-                    synchronized(offer) {
-                        offer.notifyAll();
+                proposal.mixWithOurWallet(allUnspentPreFilter);
+
+                if (proposal.getRequestedOutputCount() < MinNumberOfOutputs) {
+                    throw new Exception("proposal.getRequestedOutputCount() ( " + proposal.getRequestedOutputCount() + ") < MinNumberOfOutputs (" + MinNumberOfOutputs + ")");
+                }
+
+                //TODO recover if these fail
+                proposal.constructTransaction(allUnspentPreFilter);
+
+                //Finalize our offers
+                proposal.ourOffers = Collections.unmodifiableList(proposal.ourOffers);
+
+            } catch (Exception e) {
+                {
+                    Lock mapLock = activeAndCompletedMapLock.writeLock();
+
+                    mapLock.lock();
+                    try {
+                        activeProposals.keySet().remove(proposal.getProposalID());
+                    } finally {
+                        mapLock.unlock();
                     }
+                }
+
+                synchronized (pendingOffers) {
+                    pendingOffers.values().removeAll(proposal.getOffers());
+                }
+
+                throw e;
+            } finally {
+                walletLock.unlock();
+            }
+
+            //Wake up the long pollers
+            for (Offer offer : proposal.getOffers()) {
+                synchronized(offer) {
+                    offer.notifyAll();
                 }
             }
-        } finally {
-            lock.unlock();
+        }
+    }
+
+    public static Address getRandomAddressNotInUse() throws Exception {
+        int ii = 0;
+        while (true) {
+            String selectedAddress = OurWallet.getInstance().getRandomAddress();
+
+            if ((!isAddressTargetOfAnActiveOutput(selectedAddress)
+                    && findCompletedTransactionTargetingAddress(selectedAddress) == null)
+                    || ii > 100) {
+                return new Address(NetworkParameters.prodNet(), selectedAddress);
+            }
+
+            ++ii;
         }
     }
 
@@ -1564,7 +981,7 @@ public class SharedCoin extends HttpServlet {
             int nKB = (int)Math.ceil(tx.bitcoinSerialize().length / 1000d);
 
             boolean feeOk = transactionFee >= (nKB)*TransactionFeePer1000Bytes.longValue()
-                         && transactionFee < (nKB+4)*TransactionFeePer1000Bytes.longValue();
+                    && transactionFee < (nKB+4)*TransactionFeePer1000Bytes.longValue();
 
             if (!feeOk) {
                 throw new Exception("Sanity Check Failed. Unexpected Network Fee " + transactionFee + " != " +nKB + " * " + TransactionFeePer1000Bytes);
@@ -1590,7 +1007,7 @@ public class SharedCoin extends HttpServlet {
             for (TransactionOutput output : tx.getOutputs()) {
                 final String destinationAddress = output.getScriptPubKey().getToAddress().toString();
 
-                if (ourWallet.isOurAddress(output.getScriptPubKey().getToAddress().toString())) {
+                if (OurWallet.getInstance().isOurAddress(output.getScriptPubKey().getToAddress().toString())) {
                     continue; //One of our addresses, looks good
                 }
 
@@ -1670,13 +1087,12 @@ public class SharedCoin extends HttpServlet {
 
 
         public synchronized boolean pushTransaction() throws Exception {
-            CompletedTransaction completedTransaction;
+            Lock walletLock = OurWallet.getInstance().updateLock.writeLock();
 
-            final Lock offersLock = modifyPendingOffersLock.writeLock();
-
-            offersLock.lock();
-
+            walletLock.lock();
             try {
+                CompletedTransaction completedTransaction;
+
                 if (!isFinalized) {
                     throw new Exception("Cannot push transaction, not finalized");
                 }
@@ -1723,22 +1139,22 @@ public class SharedCoin extends HttpServlet {
 
                 putRecentlyCompleted(completedTransaction);
 
+                saveRecentlyCompleted();
+
                 activeProposals.remove(getProposalID());
+
+                boolean pushed = completedTransaction.pushTransaction();
+
+                isBroadcast = pushed;
+
+                synchronized (this) {
+                    this.notifyAll();
+                }
+
+                return pushed;
             } finally {
-                offersLock.unlock();
+                walletLock.unlock();
             }
-
-            boolean pushed = completedTransaction.pushTransaction();
-
-            lastPushedTransactionTime = System.currentTimeMillis();
-
-            isBroadcast = pushed;
-
-            synchronized(this) {
-                this.notifyAll();
-            }
-
-            return pushed;
         }
 
         public synchronized void finalizeTransaction() throws Exception {
@@ -1768,12 +1184,11 @@ public class SharedCoin extends HttpServlet {
 
                 //Sign our inputs
                 try {
-
-                    Lock lock = ourWallet.updateLock.readLock();
+                    Lock lock = OurWallet.getInstance().updateLock.readLock();
 
                     lock.lock();
                     try {
-                        MyWallet myWallet = ourWallet.getWallet();
+                        MyWallet myWallet = OurWallet.getInstance().getWalletNoLock();
 
                         for (TransactionInput input : transaction.getInputs()) {
                             if (input.getScriptBytes() == null || input.getScriptBytes().length == 0) {
@@ -2202,7 +1617,7 @@ public class SharedCoin extends HttpServlet {
                 final Output outOne = new Output();
 
                 outOne.excludeFromFee = false;
-                outOne.script = Script.createOutputScript(ourWallet.getRandomAddress());
+                outOne.script = Script.createOutputScript(getRandomAddressNotInUse());
                 outOne.value = splitValue;
 
                 newOffer.addRequestedOutput(outOne);
@@ -2229,7 +1644,7 @@ public class SharedCoin extends HttpServlet {
                         final Output outOne = new Output();
 
                         outOne.excludeFromFee = false;
-                        outOne.script = Script.createOutputScript(ourWallet.getRandomAddress());
+                        outOne.script = Script.createOutputScript(getRandomAddressNotInUse());
                         outOne.value = splitValue;
 
                         newOffer.addRequestedOutput(outOne);
@@ -2246,7 +1661,7 @@ public class SharedCoin extends HttpServlet {
 
                 mapLock.lock();
                 try {
-                    Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet() + " completedTransactions: " + recentlyCompletedTransactions.keySet());
+                    Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
                 } finally {
                     mapLock.unlock();
                 }
@@ -2552,7 +1967,7 @@ public class SharedCoin extends HttpServlet {
                     Logger.log(Logger.SeverityINFO, "constructTransaction() Adding difference output " + differenceBN);
 
                     //If it is add an output with the difference value
-                    transaction.addOutput(differenceBN, ourWallet.getRandomAddress());
+                    transaction.addOutput(differenceBN, getRandomAddressNotInUse());
                     change = change.subtract(differenceBN);
 
                     //Check fee
@@ -2589,7 +2004,7 @@ public class SharedCoin extends HttpServlet {
 
                                 if (rounded.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && rounded.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
 
-                                    transaction.addOutput(rounded, ourWallet.getRandomAddress());
+                                    transaction.addOutput(rounded, getRandomAddressNotInUse());
                                     change = change.subtract(rounded);
 
                                     //Check fee
@@ -2640,7 +2055,7 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 if (change.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
-                    transaction.addOutput(change, ourWallet.getRandomAddress());
+                    transaction.addOutput(change, getRandomAddressNotInUse());
                 }
 
                 {
@@ -2656,7 +2071,7 @@ public class SharedCoin extends HttpServlet {
 
                         if (suitableOutPoint != null) {
                             //Add all the output
-                            TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, suitableOutPoint.getValue().subtract(extraFeeNeeded), Script.createOutputScript(ourWallet.getRandomAddress()));
+                            TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, suitableOutPoint.getValue().subtract(extraFeeNeeded), Script.createOutputScript(getRandomAddressNotInUse()));
 
                             transaction.addOutput(out);
 
@@ -2820,8 +2235,25 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
+    //Returns true if the address is the target of a transaction we are creating now
     public static boolean isAddressTargetOfAnActiveOutput(String address) {
-        return findActiveOfferTargetingAddress(address) != null || findActiveProposalTargetingAddress(address) != null;
+        return findActiveOfferTargetingAddress(address) != null ||
+                findActiveProposalTargetingAddress(address) != null ||
+                findConstructingTransactionTargetingAddress(address) != null;
+    }
+
+    //Returns true if the address is in use for spending
+    public static boolean isAddressInUse(String address) throws ScriptException {
+        return findOfferConsumingAddress(address) != null
+                || findConstructingTransactionConsumingAddress(address) != null
+                || findActiveProposalConsumingAddress(address) != null;
+    }
+
+    //Returns true if an Outpoint is being spent in a transaction we are creating now
+    public static boolean isOutpointInUse(Hash hash, int index) {
+        return findOfferConsumingOutpoint(hash, index) != null
+                || findConstructingTransactionUsingOutpoint(hash, index) != null
+                || findActiveProposalsUsingOutpoint(hash, index) != null;
     }
 
     public static Offer findActiveOfferTargetingAddress(String address) {
@@ -2866,19 +2298,6 @@ public class SharedCoin extends HttpServlet {
             }
         }
         return null;
-    }
-
-
-    public static boolean isOutpointInUse(Hash hash, int index) {
-        return findOfferConsumingOutpoint(hash, index) != null
-                || findConstructingTransactionUsingOutpoint(hash, index) != null
-                || findActiveProposalsUsingOutpoint(hash, index) != null;
-    }
-
-    public static boolean isAddressInUse(String address) throws ScriptException {
-        return findOfferConsumingAddress(address) != null
-                || findConstructingTransactionConsumingAddress(address) != null
-                || findActiveProposalConsumingAddress(address) != null;
     }
 
     public static Offer findOfferConsumingAddress(String address) throws ScriptException {
@@ -3010,6 +2429,33 @@ public class SharedCoin extends HttpServlet {
         return null;
     }
 
+    public static Transaction findConstructingTransactionTargetingAddress(String address) {
+        final  Lock lock = activeAndCompletedMapLock.readLock();
+
+        lock.lock();
+        try {
+            for (final Transaction transaction : constructingTransactions.values()) {
+                for (TransactionOutput output : transaction.getOutputs()) {
+                    try {
+                        Address toAddress = output.getScriptPubKey().getToAddress();
+
+                        if (toAddress.toString().equals(address))
+                            return transaction;
+                    } catch (Exception e) {
+                        Logger.log(Logger.SeveritySeriousError, e);
+                    }
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+        return null;
+    }
+
+    public static CompletedTransaction findCompletedTransactionTargetingAddress(String address) {
+        return  _outputAddressToRecentlyCompletedCache.get(address);
+    }
+
     public static Transaction findActiveProposalsUsingOutpoint(Hash hash, int index) {
         final  Lock lock = activeAndCompletedMapLock.readLock();
 
@@ -3029,7 +2475,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static CompletedTransaction findCompletedTransactionOutputWasSpentIn(Hash hash, int index) {
-        return inputToRecentlyCompleted.get(hash.toString() + ":" + index);
+        return _inputToRecentlyCompletedCache.get(hash.toString() + ":" + index);
     }
 
     public static List<CompletedTransaction> findCompletedTransactionsSpendingTransactionHash(Hash hash) {
@@ -3626,15 +3072,13 @@ public class SharedCoin extends HttpServlet {
 
                         offer.hashedUserIP = Util.SHA256Hex(userIP);
 
-                        Logger.log(Logger.SeverityINFO, "Submit Offer Offer String " + req.getParameter("offer"));
-
                         JSONObject jsonObject = (JSONObject) new JSONParser().parse(req.getParameter("offer"));
 
                         if (jsonObject == null) {
                             throw new Exception("Invalid offer json");
                         }
 
-                        Logger.log(Logger.SeverityINFO, "Submit Offer Offer Object " + jsonObject);
+                        Logger.log(Logger.SeverityINFO, "Submit Offer Object " + jsonObject);
 
                         JSONArray inputs = (JSONArray) jsonObject.get("offered_outpoints");
 

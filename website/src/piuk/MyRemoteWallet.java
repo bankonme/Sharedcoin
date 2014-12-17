@@ -497,7 +497,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
 
-    public static Map<String, Long> getMultiAddrBalances(String[] addresses) throws Exception {
+    public static Map<String, Long> getMultiAddrBalances(List<String> addresses) throws Exception {
         String url =  "multiaddr";
 
         String params = "simple=true&active=" + StringUtils.join(addresses, "|");
@@ -514,6 +514,10 @@ public class MyRemoteWallet extends MyWallet {
             results.put(address, final_balance);
         }
         return results;
+    }
+
+    public static long getLatestBlockHeightFromQueryAPI() throws Exception {
+        return Long.valueOf(fetchAPI("q/getblockcount"));
     }
 
     public static long getMinConfirmingBlockHeightForTransactionConfirmations(String addresses) throws Exception {
@@ -541,11 +545,13 @@ public class MyRemoteWallet extends MyWallet {
 
             long blockHeight = 0;
 
-            if (txObj.get("block_height") != null)
+            if (txObj.get("block_height") != null) {
                 blockHeight = Long.valueOf(txObj.get("block_height").toString());
+            }
 
-            if (minBlockHeight == -1 || blockHeight < minBlockHeight)
+            if (minBlockHeight == -1 || blockHeight < minBlockHeight) {
                 minBlockHeight = blockHeight;
+            }
         }
 
         return minBlockHeight;
@@ -707,8 +713,8 @@ public class MyRemoteWallet extends MyWallet {
             Sha256Hash txHash = new Sha256Hash(hashBytes);
 
             int txOutputN = ((Number)outDict.get("tx_output_n")).intValue();
-            BigInteger value = BigInteger.valueOf(((Number)outDict.get("value")).longValue());
-            byte[] scriptBytes = Hex.decode((String)outDict.get("script"));
+            BigInteger value = BigInteger.valueOf(((Number) outDict.get("value")).longValue());
+            byte[] scriptBytes = Hex.decode((String) outDict.get("script"));
             int confirmations = ((Number)outDict.get("confirmations")).intValue();
 
             //Contrstuct the output
