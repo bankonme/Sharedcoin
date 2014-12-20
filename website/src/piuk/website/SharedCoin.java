@@ -1633,48 +1633,70 @@ public class SharedCoin extends HttpServlet {
             }
         }
 
-        public MyTransactionOutPoint findSuitableOutpoint(List<MyTransactionOutPoint> allUnspent, long targetValue) {
-            //So we add a new input to pay the fee
-            MyTransactionOutPoint suitableOutPoint = null;
-            final Set<String> tested = new HashSet<>();
+        public List<MyTransactionOutPoint> findSuitableOutpoints(List<MyTransactionOutPoint> allUnspent, long totalTargetValue, int maxN) {
+            for (int ii = maxN; ii > 0; --ii) {
+                long splitValue = totalTargetValue / ii;
 
-            for (int ii = 0; ii < allUnspent.size(); ++ii) {
-                MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(targetValue, allUnspent, tested, true);
+                //So we add a new input to pay the fee
+                final List<MyTransactionOutPoint> suitableOutPoints = new ArrayList<>();
 
-                if (outpoint == null) {
-                    break;
+                long valueSelected = 0;
+
+                final Set<String> tested = new HashSet<>();
+
+                while (true) {
+                    MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(splitValue, allUnspent, tested, true);
+
+                    if (outpoint == null) {
+                        break;
+                    }
+
+                    tested.add(outpoint.toString());
+
+                    if (outpoint.getValue().longValue() < splitValue) {
+                        continue;
+                    }
+
+                    final Hash hash = new Hash(outpoint.getTxHash().getBytes());
+
+                    //Make sure it is not in use
+                    if (findCompletedTransactionOutputWasSpentIn(hash, outpoint.getTxOutputN()) != null || isOutpointInUse(hash, outpoint.getTxOutputN())) {
+                        continue;
+                    }
+
+                    //Make sure the parent transactions are ok to spend
+                    CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
+                    if (createdIn != null && !createdIn.isOkToSpend()) {
+                        continue;
+                    }
+
+                    suitableOutPoints.add(outpoint);
+
+                    valueSelected += outpoint.getValue().longValue();
+
+                    if (suitableOutPoints.size() < ii) {
+                        continue;
+                    }
+
+                    if (suitableOutPoints.size() > ii) {
+                        break;
+                    }
+
+                    if (valueSelected < totalTargetValue) {
+                        continue;
+                    }
+
+                    //Check the outpoint value is not much larger than target so would leave a lot of change
+                    if (valueSelected - totalTargetValue > MaxChangeSingleConfirmedInput) {
+                        Logger.log(Logger.SeverityINFO, "findSuitableOutpoints() valueSelected - totalTargetValue > MaxChangeSingleConfirmedInput");
+                        break;
+                    }
+
+                    return suitableOutPoints;
                 }
-
-                tested.add(outpoint.toString());
-
-                //Check the outpoint value is greater than target
-                long outpointLongValue = outpoint.getValue().longValue();
-                if (outpointLongValue < targetValue) {
-                    continue;
-                }
-
-                //Check the outpoint value is not much larger than target so would leave a lot of change
-                if (outpointLongValue - targetValue > MaxChangeSingleUnconfirmedInput) {
-                    continue;
-                }
-
-                final Hash hash = new Hash(outpoint.getTxHash().getBytes());
-
-                //Make sure it is not in use
-                if (findCompletedTransactionOutputWasSpentIn(hash, outpoint.getTxOutputN()) != null || isOutpointInUse(hash, outpoint.getTxOutputN())) {
-                    continue;
-                }
-
-                //Make sure the parent transactions are ok to spend
-                CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
-                if (createdIn != null && !createdIn.isOkToSpend()) {
-                    continue;
-                }
-
-                suitableOutPoint = outpoint;
             }
 
-            return suitableOutPoint;
+            return null;
         }
 
         public synchronized void constructTransaction(List<MyTransactionOutPoint> allUnspent) throws Exception {
@@ -1808,40 +1830,80 @@ public class SharedCoin extends HttpServlet {
                     }
                 }
 
+                final long targetNumberOfInputs = Proposal.getTargets().get("number_of_inputs_after_construction").longValue();
+                final long targetNumberOfOutputs = Proposal.getTargets().get("number_of_outputs_after_construction").longValue();
+
                 //Add new outputs using the value difference between offers
                 for (long difference : potentialDifferenceValues) {
                     Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase difference " + difference);
+
+                    if (transaction.getInputs().size() >= targetNumberOfInputs) {
+                        Logger.log(Logger.SeverityINFO, "constructTransaction()  transaction.getInputs().size() >= number_of_inputs_after_construction breaking here");
+                        break;
+                    }
+
+                    if (transaction.getOutputs().size() >= targetNumberOfOutputs) {
+                        Logger.log(Logger.SeverityINFO, "constructTransaction()  transaction.getOutputs().size() >= number_of_outputs_after_construction breaking here");
+                        break;
+                    }
+
+                    if (nKB >= MaximumSoftTransactionSize) {
+                        break;
+                    }
 
                     final BigInteger differenceBN = BigInteger.valueOf(difference);
 
                     Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase change.subtract(BigInteger.valueOf(MinimumOutputValue)) " + change.subtract(BigInteger.valueOf(MinimumOutputValue)));
 
                     //If we don't have enough change select a new input to pay for it
-                    if (change.subtract(BigInteger.valueOf(MinimumOutputValue)).longValue() <= difference) {
+                    if (change.longValue() <= difference) {
+                        final BigInteger valueNeeded = differenceBN.subtract(change);
 
-                        final BigInteger valueNeeded = differenceBN.subtract(change.subtract(BigInteger.valueOf(MinimumOutputValue)));
+                        int numberOfInputs = transaction.getInputs().size();
+                        int numberOfOutputs = transaction.getInputs().size();
 
-                        MyTransactionOutPoint suitableOutPoint = findSuitableOutpoint(allUnspent, valueNeeded.longValue());
+                        //maxN is the maximum number of inputs to select
+                        //We do this to combine inputs so the wallet doesn't always become fragmented
+                        int maxN = 1;
+                        if (numberOfInputs < targetNumberOfInputs-3 && numberOfInputs < numberOfOutputs+4) {
+                            int rand = (int)(Math.random()*100);
+                            if (rand > 90) {
+                                maxN = 4;
+                            } else if (rand > 50) {
+                                maxN = 3;
+                            } else {
+                                maxN = 2;
+                            }
+                        }
 
-                        Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase suitableOutPoint " + suitableOutPoint + " valueNeeded " + valueNeeded);
+                        final List<MyTransactionOutPoint> suitableOutPoints = findSuitableOutpoints(allUnspent, valueNeeded.longValue(), maxN);
 
-                        if (suitableOutPoint == null) {
+                        Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase suitableOutPoints " + suitableOutPoints + " valueNeeded " + valueNeeded);
+
+                        if (suitableOutPoints == null) {
                             continue;
+                        }
+
+                        BigInteger totalSuitableValue = BigInteger.ZERO;
+                        for (MyTransactionOutPoint suitableOutPoint : suitableOutPoints) {
+                            totalSuitableValue = totalSuitableValue.add(suitableOutPoint.getValue());
                         }
 
                         //Make sure the difference is less than the change value (i.e. we have enough change to spend)
-                        if (change.add(suitableOutPoint.getValue()).subtract(BigInteger.valueOf(MinimumOutputValue)).longValue() <= difference) {
-                            Logger.log(Logger.SeverityINFO, "constructTransaction()  difference phase still not suitable change");
+                        if (change.add(totalSuitableValue).compareTo(differenceBN) < 0) {
+                            Logger.log(Logger.SeverityINFO, "constructTransaction() difference phase still not suitable change");
                             continue;
                         }
 
-                        TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], suitableOutPoint);
+                        for (MyTransactionOutPoint suitableOutPoint : suitableOutPoints) {
+                            TransactionInput input = new TransactionInput(NetworkParameters.prodNet(), null, new byte[0], suitableOutPoint);
 
-                        synchronized (transaction) {
-                            transaction.addInput(input);
+                            synchronized (transaction) {
+                                transaction.addInput(input);
+                            }
+
+                            change = change.add(suitableOutPoint.getValue());
                         }
-
-                        change = change.add(suitableOutPoint.getValue());
                     }
 
                     Logger.log(Logger.SeverityINFO, "constructTransaction() Adding difference output " + differenceBN);
@@ -1953,9 +2015,11 @@ public class SharedCoin extends HttpServlet {
                         Logger.log(Logger.SeverityINFO, "Proposal " + getProposalID() + " extraFeeNeeded + (" + extraFeeNeeded + ") > 0");
 
                         //So we add a new input to pay the fee
-                        MyTransactionOutPoint suitableOutPoint = findSuitableOutpoint(allUnspent, extraFeeNeeded.longValue());
+                        List<MyTransactionOutPoint> suitableOutPoints = findSuitableOutpoints(allUnspent, extraFeeNeeded.longValue(), 1);
 
-                        if (suitableOutPoint != null) {
+                        if (suitableOutPoints != null) {
+                            final MyTransactionOutPoint suitableOutPoint = suitableOutPoints.get(0);
+
                             BigInteger changeOutpoint = suitableOutPoint.getValue().subtract(extraFeeNeeded);
 
                             //If the change is less than MinimumNoneStandardOutputValue just leave it as miners fee

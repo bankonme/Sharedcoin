@@ -23,8 +23,8 @@ public class OurWallet {
     private static boolean _scheduleDivideOutputs = false;
     private static boolean _scheduleCombineOutputs = true;
 
-    private static final int TargetNumberActiveNonZeroAddresses = 750;
-    private static final int TargetNumberUnusedAddresses = 225;
+    private static final int TargetNumberActiveNonZeroAddresses = 800;
+    private static final int TargetNumberUnusedAddresses = 200;
     private static final int MaxActiveAddresses = 1000; //16KB
 
     private static final long ForceDivideLargeOutputSize = 50 * SharedCoin.COIN;
