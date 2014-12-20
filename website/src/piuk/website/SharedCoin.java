@@ -32,13 +32,14 @@ public class SharedCoin extends HttpServlet {
     private final static Map<Long, Transaction> constructingTransactions = new ConcurrentHashMap<>();
     private final static Map<String, CompletedTransaction> _inputToRecentlyCompletedCache = new ConcurrentHashMap<>();
     private final static Map<String, CompletedTransaction> _outputAddressToRecentlyCompletedCache = new ConcurrentHashMap<>();
+    private final static Map<String, CompletedTransaction> _inputAddressToRecentlyCompletedCache = new ConcurrentHashMap<>();
 
     public static int PKSeedCounter = 0;
 
     public static final long COIN = 100000000;
 
     private static final long MinimumOutputValue = COIN / 100; //0.01 BTC
-    private static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
+    public static final long MinimumOutputChangeSplitValue = COIN / 100; //0.01 BTC
     public static final long MinimumNoneStandardOutputValue = 5460;
     private static final long MinimumOutputValueExcludeFee = MinimumNoneStandardOutputValue;
 
@@ -1865,15 +1866,10 @@ public class SharedCoin extends HttpServlet {
                         //maxN is the maximum number of inputs to select
                         //We do this to combine inputs so the wallet doesn't always become fragmented
                         int maxN = 1;
-                        if (numberOfInputs < targetNumberOfInputs-3 && numberOfInputs < numberOfOutputs+4) {
-                            int rand = (int)(Math.random()*100);
-                            if (rand > 90) {
-                                maxN = 4;
-                            } else if (rand > 50) {
-                                maxN = 3;
-                            } else {
+                        if (numberOfInputs < targetNumberOfInputs-3
+                                && numberOfInputs < numberOfOutputs + 3
+                                && OurWallet.getInstance().walletIsFragmented()) {
                                 maxN = 2;
-                            }
                         }
 
                         final List<MyTransactionOutPoint> suitableOutPoints = findSuitableOutpoints(allUnspent, valueNeeded.longValue(), maxN);
@@ -2290,6 +2286,24 @@ public class SharedCoin extends HttpServlet {
             }
         }
 
+        return null;
+    }
+
+    public static Transaction findCompletedTransactionConsumingAddress(String address, long maxAge) throws ScriptException {
+        long now = System.currentTimeMillis();
+
+        for (final CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
+            if (completedTransaction.getCompletedTime() < now-maxAge) {
+                continue;
+            }
+
+            final Transaction transaction = completedTransaction.getTransaction();
+
+            synchronized (transaction) {
+                if (doesTransactionSpendAddress(transaction, address))
+                    return transaction;
+            }
+        }
         return null;
     }
 
