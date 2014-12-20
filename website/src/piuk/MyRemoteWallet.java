@@ -37,15 +37,11 @@ import piuk.common.Pair;
 import piuk.website.AdminServlet;
 import piuk.website.Settings;
 
-import java.io.DataOutputStream;
-import java.io.IOException;
 import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
-import java.nio.charset.Charset;
 import java.security.*;
-import java.security.cert.CertificateException;
 import java.util.*;
 
 
@@ -151,7 +147,7 @@ public class MyRemoteWallet extends MyWallet {
 
     public synchronized BigInteger getBalance(String address) {
         if (this.multiAddrBalancesRoot != null && this.multiAddrBalancesRoot.containsKey(address)) {
-            return BigInteger.valueOf(((Number)this.multiAddrBalancesRoot.get(address).get("final_balance")).longValue());
+            return BigInteger.valueOf(((Number) this.multiAddrBalancesRoot.get(address).get("final_balance")).longValue());
         }
 
         return BigInteger.ZERO;
@@ -159,7 +155,7 @@ public class MyRemoteWallet extends MyWallet {
 
     public synchronized int getNtx(String address) {
         if (this.multiAddrBalancesRoot != null && this.multiAddrBalancesRoot.containsKey(address)) {
-            return ((Number)this.multiAddrBalancesRoot.get(address).get("n_tx")).intValue();
+            return ((Number) this.multiAddrBalancesRoot.get(address).get("n_tx")).intValue();
         }
 
         return 0;
@@ -174,17 +170,17 @@ public class MyRemoteWallet extends MyWallet {
 
         this.temporyPassword = null;
 
-        this._checksum  = null;
+        this._checksum = null;
 
         this._isNew = true;
     }
 
-    public MyRemoteWallet( String base64Payload, String password) throws Exception {
+    public MyRemoteWallet(String base64Payload, String password) throws Exception {
         super(base64Payload, password);
 
         this.temporyPassword = password;
 
-        this._checksum  = new String(Hex.encode(MessageDigest.getInstance("SHA-256").digest(base64Payload.getBytes("UTF-8"))));
+        this._checksum = new String(Hex.encode(MessageDigest.getInstance("SHA-256").digest(base64Payload.getBytes("UTF-8"))));
 
         this._isNew = false;
     }
@@ -212,9 +208,9 @@ public class MyRemoteWallet extends MyWallet {
     private static String fetchURL(String URL) throws Exception {
 
         if (URL.indexOf("?") > 0) {
-            URL += "&api_code="+getApiCode();
+            URL += "&api_code=" + getApiCode();
         } else {
-            URL += "?api_code="+getApiCode();
+            URL += "?api_code=" + getApiCode();
         }
 
         URL url = new URL(URL);
@@ -236,7 +232,7 @@ public class MyRemoteWallet extends MyWallet {
             if (connection.getResponseCode() == 200)
                 return IOUtils.toString(connection.getInputStream(), "UTF-8");
             else if (connection.getResponseCode() == 500)
-                throw new Exception("Error From Server: " +  IOUtils.toString(connection.getErrorStream(), "UTF-8"));
+                throw new Exception("Error From Server: " + IOUtils.toString(connection.getErrorStream(), "UTF-8"));
             else
                 throw new Exception("Unknown response from server (" + connection.getResponseCode() + ") " + IOUtils.toString(connection.getErrorStream(), "UTF-8"));
 
@@ -266,7 +262,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
 
-    public boolean send(final String[] from, final String toAddress, final BigInteger amount,final BigInteger fee) throws Exception {
+    public boolean send(final String[] from, final String toAddress, final String changeAddress, final BigInteger amount, final BigInteger baseFee, boolean consumeAllOutputs) throws Exception {
 
         final List<ECKey> tempKeys = new ArrayList<>();
 
@@ -277,7 +273,7 @@ public class MyRemoteWallet extends MyWallet {
         //Try without asking for watch only addresses
         List<MyTransactionOutPoint> unspent = filter(allUnspent, tempKeys);
 
-        pair = makeTransaction(unspent, toAddress, amount, fee);
+        pair = makeTransaction(unspent, toAddress, changeAddress, amount, baseFee, consumeAllOutputs);
 
         //Transaction cancelled
         if (pair == null)
@@ -343,7 +339,7 @@ public class MyRemoteWallet extends MyWallet {
             throw new Exception("Invalid HTTP Response code " + response.getStatusLine().getStatusCode() + " " + IOUtils.toString(response.getEntity().getContent()));
         }
 
-        String responseString =  IOUtils.toString(response.getEntity().getContent(), "UTF-8");
+        String responseString = IOUtils.toString(response.getEntity().getContent(), "UTF-8");
 
         return responseString;
     }
@@ -404,10 +400,10 @@ public class MyRemoteWallet extends MyWallet {
         Map<String, Object> block_obj = (Map<String, Object>) info_obj.get("latest_block");
 
         if (block_obj != null) {
-            Sha256Hash hash = new Sha256Hash(Hex.decode((String)block_obj.get("hash")));
-            int blockIndex = ((Number)block_obj.get("block_index")).intValue();
-            int blockHeight = ((Number)block_obj.get("height")).intValue();
-            long time = ((Number)block_obj.get("time")).longValue();
+            Sha256Hash hash = new Sha256Hash(Hex.decode((String) block_obj.get("hash")));
+            int blockIndex = ((Number) block_obj.get("block_index")).intValue();
+            int blockHeight = ((Number) block_obj.get("height")).intValue();
+            long time = ((Number) block_obj.get("time")).longValue();
 
             MyBlock block = new MyBlock();
 
@@ -421,7 +417,7 @@ public class MyRemoteWallet extends MyWallet {
 
         List<JSONObject> multiAddrBalances = (List<JSONObject>) top.get("addresses");
 
-        Map<String, JSONObject>  multiAddrBalancesRoot = new HashMap<String, JSONObject>();
+        Map<String, JSONObject> multiAddrBalancesRoot = new HashMap<String, JSONObject>();
 
         for (JSONObject obj : multiAddrBalances) {
             multiAddrBalancesRoot.put((String) obj.get("address"), obj);
@@ -445,14 +441,14 @@ public class MyRemoteWallet extends MyWallet {
         }
 
         if (top.containsKey("mixer_fee")) {
-            sharedFee = ((Number)top.get("mixer_fee")).doubleValue();
+            sharedFee = ((Number) top.get("mixer_fee")).doubleValue();
         }
 
         Map<String, Object> wallet_obj = (Map<String, Object>) top.get("wallet");
 
-        this.final_balance = BigInteger.valueOf(((Number)wallet_obj.get("final_balance")).longValue());
-        this.total_sent = BigInteger.valueOf(((Number)wallet_obj.get("total_sent")).longValue());
-        this.total_received = BigInteger.valueOf(((Number)wallet_obj.get("total_received")).longValue());
+        this.final_balance = BigInteger.valueOf(((Number) wallet_obj.get("final_balance")).longValue());
+        this.total_sent = BigInteger.valueOf(((Number) wallet_obj.get("total_sent")).longValue());
+        this.total_received = BigInteger.valueOf(((Number) wallet_obj.get("total_received")).longValue());
 
         List<Map<String, Object>> transactions = (List<Map<String, Object>>) top.get("txs");
 
@@ -498,7 +494,7 @@ public class MyRemoteWallet extends MyWallet {
 
 
     public static Map<String, Long> getMultiAddrBalances(List<String> addresses) throws Exception {
-        String url =  "multiaddr";
+        String url = "multiaddr";
 
         String params = "simple=true&active=" + StringUtils.join(addresses, "|");
 
@@ -509,7 +505,7 @@ public class MyRemoteWallet extends MyWallet {
         Map<String, Long> results = new HashMap<>();
         for (Map.Entry<String, Object> entry : top.entrySet()) {
             String address = entry.getKey();
-            Long final_balance = Long.valueOf(((JSONObject)entry.getValue()).get("final_balance").toString());
+            Long final_balance = Long.valueOf(((JSONObject) entry.getValue()).get("final_balance").toString());
 
             results.put(address, final_balance);
         }
@@ -520,8 +516,8 @@ public class MyRemoteWallet extends MyWallet {
         return Long.valueOf(fetchAPI("q/getblockcount"));
     }
 
-    public static long getMinConfirmingBlockHeightForTransactionConfirmations(String addresses) throws Exception {
-        String url =  "multiaddr";
+    public static long getMaxConfirmingBlockHeightForTransactionConfirmations(String addresses) throws Exception {
+        String url = "multiaddr";
 
         String params = "active=" + addresses;
 
@@ -539,22 +535,26 @@ public class MyRemoteWallet extends MyWallet {
             return -1;
         }
 
-        long minBlockHeight = -1;
+        long maxBlockHeight = -1;
         for (Object obj : txs) {
             JSONObject txObj = (JSONObject) obj;
 
             long blockHeight = 0;
 
-            if (txObj.get("block_height") != null) {
+            if (txObj.get("block_height") == null)
+                blockHeight = 0;
+            else
                 blockHeight = Long.valueOf(txObj.get("block_height").toString());
-            }
 
-            if (minBlockHeight == -1 || blockHeight < minBlockHeight) {
-                minBlockHeight = blockHeight;
+            if (blockHeight == 0)
+                return -1;
+
+            if (blockHeight > maxBlockHeight) {
+                maxBlockHeight = blockHeight;
             }
         }
 
-        return minBlockHeight;
+        return maxBlockHeight;
     }
 
 
@@ -567,7 +567,7 @@ public class MyRemoteWallet extends MyWallet {
 
         String hexString = new String(Hex.encode(tx.bitcoinSerialize()));
 
-        postAPI("pushtx", "tx="+hexString);
+        postAPI("pushtx", "tx=" + hexString);
 
         return true;
     }
@@ -581,15 +581,12 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     //You must sign the inputs
-    public Pair<Transaction, Long> makeTransaction(List<MyTransactionOutPoint> unspent, String toAddress, BigInteger amount, BigInteger fee) throws Exception {
+    public Pair<Transaction, Long> makeTransaction(List<MyTransactionOutPoint> unspent, String toAddress, String changeAddress, BigInteger amount, BigInteger baseFee, boolean consumeAllOutputs) throws Exception {
 
         long priority = 0;
 
         if (unspent == null || unspent.size() == 0)
             throw new InsufficientFundsException("No free outputs to spend.");
-
-        if (fee == null)
-            fee = BigInteger.ZERO;
 
         if (amount == null || amount.compareTo(BigInteger.ZERO) <= 0)
             throw new Exception("You must provide an amount");
@@ -606,10 +603,8 @@ public class MyRemoteWallet extends MyWallet {
 
         //Now select the appropriate inputs
         BigInteger valueSelected = BigInteger.ZERO;
-        BigInteger valueNeeded =  amount.add(fee);
+        BigInteger valueNeeded = amount.add(baseFee);
         BigInteger minFreeOutputSize = BigInteger.valueOf(1000000);
-
-        MyTransactionOutPoint firstOutPoint = null;
 
         for (MyTransactionOutPoint outPoint : unspent) {
 
@@ -624,15 +619,14 @@ public class MyRemoteWallet extends MyWallet {
 
             tx.addInput(input);
 
-            valueSelected = valueSelected.add(outPoint.value);
+            valueSelected = valueSelected.add(outPoint.getValue());
 
-            priority += outPoint.value.longValue() * outPoint.confirmations;
+            priority += outPoint.getValue().longValue() * outPoint.confirmations;
 
-            if (firstOutPoint == null)
-                firstOutPoint = outPoint;
-
-            if (valueSelected.compareTo(valueNeeded) == 0 || valueSelected.compareTo(valueNeeded.add(minFreeOutputSize)) >= 0)
-                break;
+            if (!consumeAllOutputs) {
+                if (valueSelected.compareTo(valueNeeded) == 0 || valueSelected.compareTo(valueNeeded.add(minFreeOutputSize)) >= 0)
+                    break;
+            }
         }
 
         //Check the amount we have selected is greater than the amount we need
@@ -640,21 +634,24 @@ public class MyRemoteWallet extends MyWallet {
             throw new InsufficientFundsException("Insufficient Funds");
         }
 
+        long estimatedSize = tx.bitcoinSerialize().length + (138 * tx.getInputs().size());
+
+        BigInteger fee = BigInteger.valueOf((int) Math.ceil(estimatedSize / 1000d)).multiply(baseFee);
+
         BigInteger change = valueSelected.subtract(amount).subtract(fee);
 
-        //Now add the change if there is any
-        if (change.compareTo(BigInteger.ZERO) > 0) {
-            BitcoinScript inputScript = new BitcoinScript(firstOutPoint.getConnectedPubKeyScript());
-
-            //Return change to the first address
-            BitcoinScript change_script = BitcoinScript.createSimpleOutBitoinScript(inputScript.getAddress());
+        if (change.compareTo(BigInteger.ZERO) < 0) {
+            throw new Exception("Insufficient Value for Fee. Fix this lazy.");
+        } else if (change.compareTo(BigInteger.ZERO) > 0) {
+            //Now add the change if there is any
+            final BitcoinScript change_script = BitcoinScript.createSimpleOutBitoinScript(new BitcoinAddress(changeAddress));
 
             TransactionOutput change_output = new TransactionOutput(params, null, change, change_script.getProgram());
 
             tx.addOutput(change_output);
         }
 
-        long estimatedSize = tx.bitcoinSerialize().length + (114 * tx.getInputs().size());
+        estimatedSize = tx.bitcoinSerialize().length + (138 * tx.getInputs().size());
 
         priority /= estimatedSize;
 
@@ -663,7 +660,7 @@ public class MyRemoteWallet extends MyWallet {
 
 
     public static byte[] getScriptForOutpoint(int txIndex, int txOuputN) throws Exception {
-        StringBuffer buffer = new StringBuffer("q/outscript?tx_index="+txIndex+"&tx_output_n="+txOuputN);
+        StringBuffer buffer = new StringBuffer("q/outscript?tx_index=" + txIndex + "&tx_output_n=" + txOuputN);
 
         String response = fetchAPI(buffer.toString());
 
@@ -671,7 +668,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static MyTransaction getTransactionByHash(Hash hash, boolean scripts) throws Exception {
-        StringBuffer buffer =  new StringBuffer("tx/"+hash+"?format=json&show_adv=true&scripts="+scripts);
+        StringBuffer buffer = new StringBuffer("tx/" + hash + "?format=json&show_adv=true&scripts=" + scripts);
 
         String response = fetchAPI(buffer.toString());
 
@@ -684,13 +681,13 @@ public class MyRemoteWallet extends MyWallet {
 
         String rootURL = "unspent";
 
-        StringBuffer params =  new StringBuffer("limit="+limit+"&confirmations="+min_confirmations+"&active=");
+        StringBuffer params = new StringBuffer("limit=" + limit + "&confirmations=" + min_confirmations + "&active=");
 
         int ii = 0;
         for (String address : from) {
             params.append(address);
 
-            if (ii < from.length-1)
+            if (ii < from.length - 1)
                 params.append("|");
 
             ++ii;
@@ -706,16 +703,16 @@ public class MyRemoteWallet extends MyWallet {
 
         for (Map<String, Object> outDict : outputsRoot) {
 
-            byte[] hashBytes = Hex.decode((String)outDict.get("tx_hash"));
+            byte[] hashBytes = Hex.decode((String) outDict.get("tx_hash"));
 
             ArrayUtils.reverse(hashBytes);
 
             Sha256Hash txHash = new Sha256Hash(hashBytes);
 
-            int txOutputN = ((Number)outDict.get("tx_output_n")).intValue();
+            int txOutputN = ((Number) outDict.get("tx_output_n")).intValue();
             BigInteger value = BigInteger.valueOf(((Number) outDict.get("value")).longValue());
             byte[] scriptBytes = Hex.decode((String) outDict.get("script"));
-            int confirmations = ((Number)outDict.get("confirmations")).intValue();
+            int confirmations = ((Number) outDict.get("confirmations")).intValue();
 
             //Contrstuct the output
             MyTransactionOutPoint outPoint = new MyTransactionOutPoint(txHash, txOutputN, value, scriptBytes);
@@ -730,8 +727,8 @@ public class MyRemoteWallet extends MyWallet {
 
     /**
      * Register this account/device pair within the server.
-     * @throws Exception
      *
+     * @throws Exception
      */
     public boolean registerNotifications(final String regId) throws Exception {
         if (_isNew) return false;
@@ -741,16 +738,18 @@ public class MyRemoteWallet extends MyWallet {
         args.append("guid=" + getGUID());
         args.append("&sharedKey=" + getSharedKey());
         args.append("&method=register-android-device");
-        args.append("&payload="+URLEncoder.encode(regId));
-        args.append("&length="+regId.length());
+        args.append("&payload=" + URLEncoder.encode(regId));
+        args.append("&length=" + regId.length());
 
         String response = postAPI("wallet", args.toString());
 
         return response != null && response.length() > 0;
     }
 
-    /** k
+    /**
+     * k
      * Unregister this account/device pair within the server.
+     *
      * @throws Exception
      */
     public boolean unregisterNotifications(final String regId) throws Exception {
@@ -761,8 +760,8 @@ public class MyRemoteWallet extends MyWallet {
         args.append("guid=" + getGUID());
         args.append("&sharedKey=" + getSharedKey());
         args.append("&method=unregister-android-device");
-        args.append("&payload="+URLEncoder.encode(regId));
-        args.append("&length="+regId.length());
+        args.append("&payload=" + URLEncoder.encode(regId));
+        args.append("&length=" + regId.length());
 
         String response = postAPI("wallet", args.toString());
 
@@ -776,7 +775,8 @@ public class MyRemoteWallet extends MyWallet {
 
         args.append("guid=" + getGUID());
         args.append("&sharedKey=" + getSharedKey());
-        args.append("&method=get-info");;
+        args.append("&method=get-info");
+        ;
 
         String response = postAPI("wallet", args.toString());
 
@@ -792,7 +792,8 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&sharedKey=" + getSharedKey());
         args.append("&payload=" + currency_code);
         args.append("&length=" + currency_code.length());
-        args.append("&method=update-currency");;
+        args.append("&method=update-currency");
+        ;
 
         String response = postAPI("wallet", args.toString());
 
@@ -801,8 +802,8 @@ public class MyRemoteWallet extends MyWallet {
 
     /**
      * Get the tempoary paring encryption password
-     * @throws Exception
      *
+     * @throws Exception
      */
     public static String getPairingEncryptionPassword(final String guid) throws Exception {
         StringBuilder args = new StringBuilder();
@@ -814,7 +815,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static BigInteger getAddressBalance(final String address) throws Exception {
-        return new BigInteger(fetchAPI("q/addressbalance/"+address));
+        return new BigInteger(fetchAPI("q/addressbalance/" + address));
     }
 
     public static String getWalletManualPairing(final String guid) throws Exception {
@@ -841,16 +842,13 @@ public class MyRemoteWallet extends MyWallet {
 
         String old_checksum = this._checksum;
 
-        this._checksum  = new String(Hex.encode(MessageDigest.getInstance("SHA-256").digest(payload.getBytes("UTF-8"))));
+        this._checksum = new String(Hex.encode(MessageDigest.getInstance("SHA-256").digest(payload.getBytes("UTF-8"))));
 
         String method = _isNew ? "insert" : "update";
 
-        if (kaptcha == null && _isNew)
-        {
+        if (kaptcha == null && _isNew) {
             throw new Exception("Must provide a kaptcha to insert wallet");
-        }
-        else if (kaptcha == null)
-        {
+        } else if (kaptcha == null) {
             kaptcha = "";
         }
 
@@ -874,8 +872,7 @@ public class MyRemoteWallet extends MyWallet {
         args.append("&device=");
         args.append("android");
 
-        if (old_checksum != null && old_checksum.length() > 0)
-        {
+        if (old_checksum != null && old_checksum.length() > 0) {
             args.append("&old_checksum=");
             args.append(old_checksum);
         }
@@ -918,7 +915,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static String getWalletPayload(String guid, String sharedKey, String checkSumString) throws Exception {
-        String payload = fetchAPI("wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey+"&checksum="+checkSumString);
+        String payload = fetchAPI("wallet/wallet.aes.json?guid=" + guid + "&sharedKey=" + sharedKey + "&checksum=" + checkSumString);
 
         if (payload == null) {
             throw new Exception("Error downloading wallet");
@@ -932,7 +929,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     public static String getWalletPayload(String guid, String sharedKey) throws Exception {
-        String payload = fetchAPI("wallet/wallet.aes.json?guid="+guid+"&sharedKey="+sharedKey);
+        String payload = fetchAPI("wallet/wallet.aes.json?guid=" + guid + "&sharedKey=" + sharedKey);
 
         if (payload == null) {
             throw new Exception("Error downloading wallet");

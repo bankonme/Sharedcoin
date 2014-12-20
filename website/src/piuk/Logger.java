@@ -21,20 +21,27 @@ public class Logger {
     }
 
     public static void log(int severity, final Object args) {
-        synchronized (logStack) {
-            logStack.add("------------ "+new Date()+" ------------\n" + args.toString());
 
-            if (logStack.size() >= 100) {
-                logStack.remove(0);
+        if (args instanceof Exception) {
+            if (log || severity == SeveritySeriousError) {
+                ((Exception)args).printStackTrace();
             }
-        }
+        } else {
+            synchronized (logStack) {
+                logStack.add("------------ " + new Date() + " ------------\n" + args.toString());
 
-        if (severity == SeverityINFO) {
-            if (logInfo) {
-                System.out.println(new Date() + " INFO: " + args);
+                if (logStack.size() >= 100) {
+                    logStack.remove(0);
+                }
             }
-        } else if (log || severity == SeveritySeriousError) {
-            System.out.println(args);
+
+            if (severity == SeverityINFO) {
+                if (logInfo) {
+                    System.out.println(new Date() + " INFO: " + args);
+                }
+            } else if (log || severity == SeveritySeriousError) {
+                System.out.println(args);
+            }
         }
     }
 }

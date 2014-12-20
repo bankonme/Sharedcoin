@@ -5,17 +5,13 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import org.apache.commons.lang3.ArrayUtils;
 import piuk.*;
-import sun.rmi.runtime.Log;
 
-import java.io.FileWriter;
-import java.io.IOException;
 import java.math.BigInteger;
 import java.util.*;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -24,17 +20,18 @@ public class OurWallet {
     private volatile MyRemoteWallet _cached = null;
     public ReadWriteLock updateLock = new ReentrantReadWriteLock();
 
-    private static boolean _scheduleDivideLargeOutputs = false;
-    private static boolean _scheduleCombineDust = true;
+    private static boolean _scheduleDivideOutputs = false;
+    private static boolean _scheduleCombineOutputs = true;
 
-    private static final int TargetNumberActiveAddresses = 800;
+    private static final int TargetNumberActiveNonZeroAddresses = 750;
+    private static final int TargetNumberUnusedAddresses = 225;
     private static final int MaxActiveAddresses = 1000; //16KB
 
     private static final long ForceDivideLargeOutputSize = 50 * SharedCoin.COIN;
     private static final long RandomDivideLargeOutputSize = 25 * SharedCoin.COIN;
 
     private static final int TimerInterval = 10000; //10 seconds
-    private static final int TidyWalletInterval = 120000; //2 minutes
+    private static final int TidyWalletInterval = 60000; //1 minutes
     private static final int CleanOutConfirmedInterval = 120000; //2 minutes
 
     private static long lastTidyWalletTime = 0;
@@ -74,22 +71,26 @@ public class OurWallet {
                     @Override
                     public void run() {
                         try {
-                            final long now = System.currentTimeMillis();
+                            if (_scheduleDivideOutputs) {
+                                _scheduleDivideOutputs = false;
+                                Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run divideOutputs()");
+                                instance.divideOutputs();
+                            }
 
-                            if (_scheduleDivideLargeOutputs) {
-                                _scheduleDivideLargeOutputs = false;
-                                Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run divideLargeOutputs()");
-                                instance.divideLargeOutputs();
-                            } else if (_scheduleCombineDust) {
-                                _scheduleCombineDust = false;
-                                Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run combineDust()");
-                                instance.combineDust();
-                            } else if (lastCleanOutConfirmedTime < now - CleanOutConfirmedInterval) {
-                                lastCleanOutConfirmedTime = now;
+                            if (_scheduleCombineOutputs) {
+                                _scheduleCombineOutputs = false;
+                                Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run combineOutputs()");
+                                instance.combineOutputs();
+                            }
+
+                            if (lastCleanOutConfirmedTime < System.currentTimeMillis() - CleanOutConfirmedInterval) {
+                                lastCleanOutConfirmedTime = System.currentTimeMillis();
                                 Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run cleanOutFullyConfirmedAddresses()");
                                 instance.cleanOutFullyConfirmedAddresses();
-                            } else if (lastTidyWalletTime < now - TidyWalletInterval) {
-                                lastTidyWalletTime = now;
+                            }
+
+                            if (lastTidyWalletTime < System.currentTimeMillis() - TidyWalletInterval) {
+                                lastTidyWalletTime = System.currentTimeMillis();
                                 Logger.log(Logger.SeverityINFO, "OurWallet.scheduleTidyTasks() Run tidyTheWallet()");
                                 instance.tidyTheWallet();
                             }
@@ -164,19 +165,15 @@ public class OurWallet {
             final List<MyTransactionOutPoint> filtered = new ArrayList<>();
 
             for (MyTransactionOutPoint outPoint : unspent) {
-                try {
-                    final Script script = SharedCoin.newScript(outPoint.getScriptBytes());
+                final String address = outPoint.getAddress();
 
-                    final Address address = script.getToAddress();
-
+                if (address != null) {
                     //Dont return outpoints from addresses we spent recently
                     //Otherwise the OurWallet use could double spend
-                    if (!isAddressWeRecentlySpent(address.toString())) {
+                    if (!isAddressWeRecentlySpent(address)) {
                         filtered.add(outPoint);
                     }
-                } catch (Exception e) {
-                    Logger.log(Logger.SeveritySeriousError, e);
-
+                } else {
                     filtered.add(outPoint);
                 }
             }
@@ -228,13 +225,13 @@ public class OurWallet {
 
         {
             //Delete after 6 confirmations
-            long minDeletionBlockHeight = currentBlockHeight - 6;
+            long maxDeletionBlockHeight = currentBlockHeight - 3;
 
             final MyRemoteWallet wallet = getWalletNoLock();
 
             final List<String> archived = Arrays.asList(wallet.getArchivedAddresses());
 
-            final List<List<String>> batches = Util.divideListInSublistsOfNSize(archived, 500);
+            final List<List<String>> batches = Util.divideListInSublistsOfNSize(archived, 1000);
 
             for (List<String> batch : batches) {
                 Logger.log(Logger.SeverityINFO, "OurWallet.cleanOutFullyConfirmedAddresses() batch " + batch);
@@ -254,9 +251,9 @@ public class OurWallet {
 
                             pendingOperations.add(new UnarchiveArchiveWalletOperation(address));
                         } else if (balance == 0) {
-                            long blockHeight = MyRemoteWallet.getMinConfirmingBlockHeightForTransactionConfirmations(address);
+                            long blockHeight = MyRemoteWallet.getMaxConfirmingBlockHeightForTransactionConfirmations(address);
 
-                            if (blockHeight > 0 && blockHeight <= minDeletionBlockHeight) {
+                            if (blockHeight > 0 && blockHeight <= maxDeletionBlockHeight) {
                                 Logger.log(Logger.SeverityINFO, "OurWallet.cleanOutFullyConfirmedAddresses() Delete blockHeight " + address + " blockHeight " + blockHeight);
 
                                 pendingOperations.add(new DeleteAddressWalletOperation(address));
@@ -289,7 +286,7 @@ public class OurWallet {
     }
 
 
-    public synchronized void combineDust() throws Exception {
+    public synchronized void combineOutputs() throws Exception {
         Lock lock = updateLock.writeLock();
 
         lock.lock();
@@ -300,30 +297,44 @@ public class OurWallet {
 
             MyRemoteWallet wallet = getWalletNoLock();
 
-            for (int ii = 0; ii < 2; ++ii) {
-                try {
-                    wallet.doMultiAddr();
+            wallet.doMultiAddr();
 
-                    break;
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-
-            final List<String> toCombineAddresses = new ArrayList<>();
+            final Set<String> toCombineAddresses = new HashSet<>();
 
             BigInteger value = BigInteger.ZERO;
 
+            int numberOfActiveNonZero = 0;
+            for (String address : wallet.getActiveAddresses()) {
+                final int n_tx = wallet.getNtx(address);
+                final BigInteger balance = wallet.getBalance(address);
+
+                if (n_tx > 0 && balance.compareTo(BigInteger.ZERO) > 0) {
+                    ++numberOfActiveNonZero;
+                }
+            }
+
+            Logger.log(Logger.SeverityINFO, "combineOutputs() numberOfActiveNonZero " + numberOfActiveNonZero);
+
+            boolean shouldCombineUsed = (numberOfActiveNonZero > TargetNumberActiveNonZeroAddresses);
+
+            final List<String> unusedAddresses = new ArrayList<>();
 
             boolean addedAddressForFee = false;
             for (String address : wallet.getActiveAddresses()) {
                 final BigInteger balance = wallet.getBalance(address);
+                final int n_tx = wallet.getNtx(address);
+
+                boolean isUsed = n_tx > 0;
+
+                if (SharedCoin.isAddressInUse(address) || SharedCoin.isAddressTargetOfAnActiveOutput(address) || isAddressWeRecentlySpent(address)) {
+                    continue;
+                }
+
+                if (!isUsed) {
+                    unusedAddresses.add(address);
+                }
 
                 if (!addedAddressForFee && balance.compareTo(BigInteger.valueOf(SharedCoin.COIN)) >= 0) {
-
-                    if (SharedCoin.isAddressInUse(address) || SharedCoin.isAddressTargetOfAnActiveOutput(address) || isAddressWeRecentlySpent(address)) {
-                        continue;
-                    }
 
                     toCombineAddresses.add(address);
 
@@ -331,13 +342,14 @@ public class OurWallet {
 
                     value = value.add(balance);
 
-                } else if (balance.compareTo(BigInteger.ZERO) > 0 && balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0 && toCombineAddresses.size() < 10) {
+                } else if (isUsed && shouldCombineUsed && balance.compareTo(BigInteger.valueOf(SharedCoin.MaximumOutputValue)) < 0 && toCombineAddresses.size() < 4) {
+                    Logger.log(Logger.SeverityINFO, "combineOutputs() Address " + address + " " + balance);
 
-                    Logger.log(Logger.SeverityINFO, "Dust Address " + address + " " + balance);
+                    toCombineAddresses.add(address);
 
-                    if (SharedCoin.isAddressInUse(address) || SharedCoin.isAddressTargetOfAnActiveOutput(address) || isAddressWeRecentlySpent(address)) {
-                        continue;
-                    }
+                    value = value.add(balance);
+                } else if (balance.compareTo(BigInteger.ZERO) > 0 && balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0 && toCombineAddresses.size() <= 10) {
+                    Logger.log(Logger.SeverityINFO, "combineOutputs() Dust Address " + address + " " + balance);
 
                     toCombineAddresses.add(address);
 
@@ -345,34 +357,45 @@ public class OurWallet {
                 }
             }
 
-            if (toCombineAddresses.size() <= 2) {
+            if (toCombineAddresses.size() < 2) {
                 return;
             }
 
-            if (toCombineAddresses.size() >= 10) {
-                _scheduleCombineDust = true;
+            _scheduleCombineOutputs = true;
+
+            final String destinationAddress;
+            if (unusedAddresses.size() > 0) {
+                destinationAddress = unusedAddresses.get(0);
+                unusedAddresses.remove(destinationAddress);
+            } else {
+                destinationAddress = getRandomAddressNoLock();
             }
 
-            final BigInteger fee = SharedCoin.TransactionFeePer1000Bytes.multiply(BigInteger.valueOf(Math.round(toCombineAddresses.size() / 1.5)));
+            final String changeAddress;
+            if (unusedAddresses.size() > 0) {
+                changeAddress = unusedAddresses.get(0);
+                unusedAddresses.remove(changeAddress);
+            } else {
+                changeAddress = getRandomAddressNoLock();
+            }
 
-
-            final String destination = getRandomAddressNoLock().toString();
-
-            Logger.log(Logger.SeverityWARN, "combineDust() Send From [" + toCombineAddresses + "] to destination " + destination);
+            Logger.log(Logger.SeverityINFO, "combineOutputs() Send From [" + toCombineAddresses + "] to destination " + destinationAddress + " changeAddress " + changeAddress);
 
             addressesWeRecentlySpent.addAll(toCombineAddresses);
 
-            if (wallet.send(toCombineAddresses.toArray(new String[]{}), destination, value.divide(BigInteger.valueOf(2)), fee)) {
-                Logger.log(Logger.SeverityINFO, "Combine Dust wallet.send returned true");
+            long split = (long) ((value.longValue() / 2) * (Math.random() + 0.5));
+
+            if (wallet.send(toCombineAddresses.toArray(new String[]{}), destinationAddress, changeAddress, BigInteger.valueOf(split), SharedCoin.TransactionFeePer1000Bytes, true)) {
+                Logger.log(Logger.SeverityINFO, "combineOutputs() wallet.send returned true");
             } else {
-                Logger.log(Logger.SeverityError, "Combine Dust wallet.send returned false");
+                Logger.log(Logger.SeverityINFO, "combineOutputs() wallet.send returned false");
             }
         } finally {
             lock.unlock();
         }
     }
 
-    public synchronized void divideLargeOutputs() throws Exception {
+    public synchronized void divideOutputs() throws Exception {
         Lock lock = updateLock.writeLock();
 
         lock.lock();
@@ -382,13 +405,19 @@ public class OurWallet {
             //Delete archived addresses with transactions > 6 confirmations
             final MyRemoteWallet wallet = getWalletNoLock();
 
-            for (int ii = 0; ii < 2; ++ii) {
-                try {
-                    wallet.doMultiAddr();
+            wallet.doMultiAddr();
 
-                    break;
-                } catch (Exception e) {
-                    e.printStackTrace();
+            final List<String> unusedAddresses = new ArrayList<>();
+
+            for (String address : wallet.getActiveAddresses()) {
+                final int n_tx = wallet.getNtx(address);
+
+                if (SharedCoin.isAddressInUse(address) || SharedCoin.isAddressTargetOfAnActiveOutput(address) || isAddressWeRecentlySpent(address)) {
+                    continue;
+                }
+
+                if (n_tx == 0) {
+                    unusedAddresses.add(address);
                 }
             }
 
@@ -396,24 +425,41 @@ public class OurWallet {
                 BigInteger balance = wallet.getBalance(address);
 
                 if (balance.compareTo(BigInteger.valueOf(ForceDivideLargeOutputSize)) >= 0) {
-                    _scheduleDivideLargeOutputs = true;
+                    _scheduleDivideOutputs = true;
+                }
+
+                if (SharedCoin.isAddressInUse(address)
+                        || SharedCoin.isAddressTargetOfAnActiveOutput(address)
+                        || isAddressWeRecentlySpent(address)) {
+                    continue;
                 }
 
                 if (balance.longValue() >= ForceDivideLargeOutputSize || (Math.random() > 0.75 && balance.longValue() >= RandomDivideLargeOutputSize)) {
 
                     long split = (long) ((balance.longValue() / 2) * (Math.random() + 0.5));
 
-                    String destination = getRandomAddressNoLock().toString();
 
-                    Logger.log(Logger.SeverityWARN, "divideLargeOutputs() Send From [" + address + "] to destination " + destination + " value " + split);
-
-                    if (SharedCoin.isAddressInUse(address) || SharedCoin.isAddressTargetOfAnActiveOutput(address) || isAddressWeRecentlySpent(address)) {
-                        continue;
+                    final String destinationAddress;
+                    if (unusedAddresses.size() > 0) {
+                        destinationAddress = unusedAddresses.get(0);
+                        unusedAddresses.remove(destinationAddress);
+                    } else {
+                        destinationAddress = getRandomAddressNoLock();
                     }
+
+                    final String changeAddress;
+                    if (unusedAddresses.size() > 0) {
+                        changeAddress = unusedAddresses.get(0);
+                        unusedAddresses.remove(changeAddress);
+                    } else {
+                        changeAddress = getRandomAddressNoLock();
+                    }
+
+                    Logger.log(Logger.SeverityWARN, "divideOutputs() Send From [" + address + "] to destination " + destinationAddress + " value " + split + " changeAddress " + changeAddress);
 
                     addressesWeRecentlySpent.add(address);
 
-                    wallet.send(new String[]{address}, destination, BigInteger.valueOf(split), SharedCoin.TransactionFeePer1000Bytes);
+                    wallet.send(new String[]{address}, destinationAddress, changeAddress, BigInteger.valueOf(split), SharedCoin.TransactionFeePer1000Bytes, true);
 
                     break;
                 }
@@ -591,17 +637,23 @@ public class OurWallet {
 
         Logger.log(Logger.SeverityINFO, "OurWallet.tidyTheWallet() Number Of Active Addresses " + allActiveAddresses.length + " Number of Archived " + allArchivedAddresses.length);
 
+        int numberOfUnusedAddresses = 0;
+
         //Archive any 0 balance addreses
         for (String address : allActiveAddresses) {
             final BigInteger balance = multiAddrWallet.getBalance(address);
             final int n_tx = multiAddrWallet.getNtx(address);
 
             if (balance.compareTo(BigInteger.valueOf(ForceDivideLargeOutputSize)) >= 0) {
-                _scheduleDivideLargeOutputs = true;
+                _scheduleDivideOutputs = true;
             }
 
             if (balance.compareTo(BigInteger.valueOf(CombineDustMinimumOutputSize)) <= 0) {
-                _scheduleCombineDust = true;
+                _scheduleCombineOutputs = true;
+            }
+
+            if (n_tx == 0) {
+                ++numberOfUnusedAddresses;
             }
 
             if (n_tx > 0 && balance.compareTo(BigInteger.ZERO) == 0) {
@@ -612,6 +664,7 @@ public class OurWallet {
                 //Archive the address after it has been used for at least one transaction and the balance is zero
                 pendingOperations.add(new ArchiveWalletOperation(address));
             }
+
         }
 
         if (allActiveAddresses.length - pendingOperations.calculateNArchived() > MaxActiveAddresses) {
@@ -651,16 +704,24 @@ public class OurWallet {
                     }
                 }
             }
-        } else {
-            //Generate New Addresses To Fill the wallet
-            int nAddressToCreate = TargetNumberActiveAddresses - (allActiveAddresses.length - pendingOperations.calculateNArchived());
+        }
 
-            //Logger.log(Logger.SeverityWARN, "Tidy Wallet: Generate " + nAddressToCreate + " new addresses");
+        if (numberOfUnusedAddresses < TargetNumberUnusedAddresses) {
+            int nAddressToCreate = Math.min(TargetNumberUnusedAddresses - numberOfUnusedAddresses, MaxActiveAddresses - (allActiveAddresses.length - pendingOperations.calculateNArchived()));
 
-            for (int ii = 0; ii < nAddressToCreate; ++ii) {
-                ECKey key = makeECKey();
+            if (nAddressToCreate == 0) {
+                Logger.log(Logger.SeverityINFO, "Tidy Wallet: nAddressToCreate == 0 Scheduling Dust");
 
-                pendingOperations.add(new GenerateAddressWalletOperation(key));
+                _scheduleCombineOutputs = true;
+            } else {
+                //Generate New Addresses To Fill the wallet
+                Logger.log(Logger.SeverityINFO, "Tidy Wallet: Generate " + nAddressToCreate + " new addresses numberOfUnusedAddresses " + numberOfUnusedAddresses);
+
+                for (int ii = 0; ii < nAddressToCreate; ++ii) {
+                    ECKey key = makeECKey();
+
+                    pendingOperations.add(new GenerateAddressWalletOperation(key));
+                }
             }
         }
 
