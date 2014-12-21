@@ -1,6 +1,6 @@
 package piuk;
 
-import com.google.bitcoin.core.Sha256Hash;
+import org.bitcoinj.core.*;
 
 public class MyBlock {
 	public int height;

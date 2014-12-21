@@ -1,10 +1,13 @@
 package piuk;
 
-import java.math.BigInteger;
 
-
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
+import org.bitcoinj.core.Sha256Hash;
+import org.bitcoinj.params.MainNetParams;
+import org.bitcoinj.script.Script;
 import piuk.website.SharedCoin;
+
+import java.math.BigInteger;
 
 //Very messy
 public class MyTransactionOutPoint extends TransactionOutPoint {
@@ -31,7 +34,7 @@ public class MyTransactionOutPoint extends TransactionOutPoint {
 			try {
 				final Script script = SharedCoin.newScript(this.getScriptBytes());
 
-				final Address address = script.getToAddress();
+				final Address address = script.getToAddress(MainNetParams.get());
 
 				_addressCache = address.toString();
 			} catch (Exception e) {
@@ -68,7 +71,7 @@ public class MyTransactionOutPoint extends TransactionOutPoint {
 
 	@Override
 	public TransactionOutput getConnectedOutput() {		       
-		return new TransactionOutput(params, null, value, scriptBytes);
+		return new TransactionOutput(params, null, Coin.valueOf(value.longValue()), scriptBytes);
 	}
 
 	@Override

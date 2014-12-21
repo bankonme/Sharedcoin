@@ -1,6 +1,12 @@
 package piuk.website;
 
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
+import org.bitcoinj.params.MainNetParams;
+import org.bitcoinj.script.Script;
+import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.signers.LocalTransactionSigner;
+import org.bitcoinj.signers.TransactionSigner;
+import org.bitcoinj.wallet.KeyChainGroup;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -20,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -46,7 +53,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumHardTransactionSize = 100; //100KB
     private static final long MaximumSoftTransactionSize = 16; //16KB
 
-    private static final long MaxPollTime = 7000;
+    private static final long MaxPollTime = 5000;
 
     private static final double DefaultFeePercent = 0.0; //Per rep
     private static final long MinimumFee = (long) (COIN * 0.0005); //At this point transaction fees start costing more
@@ -112,7 +119,7 @@ public class SharedCoin extends HttpServlet {
 
         for (TransactionOutput output : transaction.getOutputs()) {
             try {
-                String address = output.getScriptPubKey().getToAddress().toString();
+                String address = output.getScriptPubKey().getToAddress(MainNetParams.get()).toString();
 
                 _outputAddressToRecentlyCompletedCache.put(address, completedTransaction);
             } catch (Exception e) {
@@ -153,7 +160,7 @@ public class SharedCoin extends HttpServlet {
 
         for (TransactionOutput output : transaction.getOutputs()) {
             try {
-                String address = output.getScriptPubKey().getToAddress().toString();
+                String address = output.getScriptPubKey().getToAddress(MainNetParams.get()).toString();
 
                 _outputAddressToRecentlyCompletedCache.keySet().remove(address);
             } catch (Exception e) {
@@ -281,7 +288,7 @@ public class SharedCoin extends HttpServlet {
             return fee;
         }
 
-        public synchronized boolean pushTransaction() throws Exception {
+        public boolean pushTransaction() throws Exception {
 
             if (completedTime == 0)
                 completedTime = System.currentTimeMillis();
@@ -300,7 +307,9 @@ public class SharedCoin extends HttpServlet {
 
             pushCount += 1;
 
-            this.notifyAll();
+            synchronized (this) {
+                this.notifyAll();
+            }
 
             return pushed;
         }
@@ -401,7 +410,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Script newScript(byte[] bytes) throws ScriptException {
-        return new Script(NetworkParameters.prodNet(), bytes, 0, bytes.length);
+        return new Script(bytes);
     }
 
     public void addOfferToPending(Offer offer) throws Exception {
@@ -535,24 +544,20 @@ public class SharedCoin extends HttpServlet {
                     continue;
                 } catch (Exception e) {
                     completedTransaction.isConfirmedBroadcastSuccessfully = false;
-
-                    e.printStackTrace();
                 }
 
                 if (!didAlreadyFail)
                     continue;
 
-                System.out.println("Transaction Not Found " + completedTransaction.getTransaction().getHash() + ". Proposal Age " + age + "ms completedTransaction.getPushCount() " + completedTransaction.getPushCount());
+                Logger.log(Logger.SeveritySeriousError, "Transaction Not Found " + completedTransaction.getTransaction().getHash() + ". Proposal Age " + age + "ms completedTransaction.getPushCount() " + completedTransaction.getPushCount());
 
                 if (age > ProposalExpiryTimeFailedToBroadcast) {
                     removeRecentlyCompletedAndChildren(completedTransaction);
                 } else if (completedTransaction.getPushCount() < 5) {
-                    System.out.println("Re-broadcasting transaction");
-
                     try {
                         completedTransaction.pushTransaction();
                     } catch (Exception e) {
-                        e.printStackTrace();
+                        Logger.log(Logger.SeveritySeriousError, e);
                     }
                 }
             }
@@ -597,16 +602,11 @@ public class SharedCoin extends HttpServlet {
     public static void cleanExpiredOffers() {
         long now = System.currentTimeMillis();
 
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
         for (Offer offer : offers) {
             if (offer.getReceivedTime() > 0 && offer.getReceivedTime() < now - OfferExpiryTime) {
-                synchronized (pendingOffers) {
-                    pendingOffers.remove(offer.getOfferID());
-                }
+                pendingOffers.remove(offer.getOfferID());
             }
         }
     }
@@ -615,10 +615,8 @@ public class SharedCoin extends HttpServlet {
     public static void createProposalsIfNeeded() throws Exception {
         long now = System.currentTimeMillis();
 
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
+
 
         for (Offer offer : offers) {
             //If the oldest offer has reached a certain age force creation
@@ -651,81 +649,75 @@ public class SharedCoin extends HttpServlet {
     public synchronized static void runCreateProposals() throws Exception {
         Proposal proposal = new Proposal();
 
-        synchronized (proposal) {
-            {
-                int nInputs = 0;
-                int nOutputs = 0;
-                Set<String> allDestinationAddresses = new HashSet<>();
+        {
+            int nInputs = 0;
+            int nOutputs = 0;
+            Set<String> allDestinationAddresses = new HashSet<>();
 
-                //Set used to make sure no two offers are combined which contain inputs from the same transaction.
-                Set<Hash> inputTransactionHashes = new HashSet<>();
+            //Set used to make sure no two offers are combined which contain inputs from the same transaction.
+            Set<Hash> inputTransactionHashes = new HashSet<>();
 
-                final List<Offer> offers;
-                synchronized (pendingOffers) {
-                    offers = new ArrayList<>(pendingOffers.values());
+            final List<Offer> offers = new ArrayList<>(pendingOffers.values());
+
+            for (Offer offer : offers) {
+
+                nInputs += offer.getOfferedOutpoints().size();
+                nOutputs += offer.getRequestedOutputs().size();
+
+                if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
+                    break;
                 }
 
+                if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
+                    break;
+                }
 
-                for (Offer offer : offers) {
+                if (proposal.getOffers().size() >= Proposal.getTargets().get("number_of_offers").longValue()) {
+                    break;
+                }
 
-                    nInputs += offer.getOfferedOutpoints().size();
-                    nOutputs += offer.getRequestedOutputs().size();
+                //Encure All Output addresses are unique
+                Set<String> thisOfferDestinationAddresses = offer.getRequestedOutputAddresses();
+                if (!Collections.disjoint(allDestinationAddresses, offer.getRequestedOutputAddresses())) {
+                    //All output addresses must be unique
+                    //If there are any duplicates don't put them in the same proposal
+                    continue;
+                } else {
+                    allDestinationAddresses.addAll(thisOfferDestinationAddresses);
+                }
 
-                    if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
-                        break;
+                Set<Hash> offerInputTransactionHashes = new HashSet<>();
+                for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                    offerInputTransactionHashes.add(outpointWithValue.getHash());
+                }
+
+                //Ensure all input transactions are unique
+                if (!Collections.disjoint(inputTransactionHashes, offerInputTransactionHashes)) {
+                    //All output addresses must be unique
+                    //If there are any duplicates don't put them in the same proposal
+                    continue;
+                } else {
+                    //If none are contained add them to the set
+                    inputTransactionHashes.addAll(offerInputTransactionHashes);
+                }
+
+                boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
+
+                if (!hasFailedToSign) {
+                    if (!proposal.addOffer(offer)) {
+                        throw new Exception("Error Adding Offer To Proposal");
+                    }
+                } else if (proposal.getOffers().size() == 0) {
+                    //We only allow IPs that have failed to sign to join a proposal on their own
+                    //That way it doesn't affect other users
+
+                    if (!proposal.addOffer(offer)) {
+                        throw new Exception("Error Adding Offer To Proposal");
                     }
 
-                    if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
-                        break;
-                    }
-
-                    if (proposal.getOffers().size() >= Proposal.getTargets().get("number_of_offers").longValue()) {
-                        break;
-                    }
-
-                    //Encure All Output addresses are unique
-                    Set<String> thisOfferDestinationAddresses = offer.getRequestedOutputAddresses();
-                    if (!Collections.disjoint(allDestinationAddresses, offer.getRequestedOutputAddresses())) {
-                        //All output addresses must be unique
-                        //If there are any duplicates don't put them in the same proposal
-                        continue;
-                    } else {
-                        allDestinationAddresses.addAll(thisOfferDestinationAddresses);
-                    }
-
-                    Set<Hash> offerInputTransactionHashes = new HashSet<>();
-                    for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
-                        offerInputTransactionHashes.add(outpointWithValue.getHash());
-                    }
-
-                    //Ensure all input transactions are unique
-                    if (!Collections.disjoint(inputTransactionHashes, offerInputTransactionHashes)) {
-                        //All output addresses must be unique
-                        //If there are any duplicates don't put them in the same proposal
-                        continue;
-                    } else {
-                        //If none are contained add them to the set
-                        inputTransactionHashes.addAll(offerInputTransactionHashes);
-                    }
-
-                    boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
-
-                    if (!hasFailedToSign) {
-                        if (!proposal.addOffer(offer)) {
-                            throw new Exception("Error Adding Offer To Proposal");
-                        }
-                    } else if (proposal.getOffers().size() == 0) {
-                        //We only allow IPs that have failed to sign to join a proposal on their own
-                        //That way it doesn't affect other users
-
-                        if (!proposal.addOffer(offer)) {
-                            throw new Exception("Error Adding Offer To Proposal");
-                        }
-
-                        break;
-                    } else {
-                        continue;
-                    }
+                    break;
+                } else {
+                    continue;
                 }
             }
 
@@ -751,9 +743,7 @@ public class SharedCoin extends HttpServlet {
                 activeProposals.put(proposal.getProposalID(), proposal);
 
                 //Remove the offer from pending
-                synchronized (pendingOffers) {
-                    pendingOffers.values().removeAll(proposal.getOffers());
-                }
+                pendingOffers.values().removeAll(proposal.getOffers());
 
                 proposal.mixWithOurWallet(allUnspentPreFilter);
 
@@ -770,9 +760,7 @@ public class SharedCoin extends HttpServlet {
             } catch (Exception e) {
                 activeProposals.keySet().remove(proposal.getProposalID());
 
-                synchronized (pendingOffers) {
-                    pendingOffers.values().removeAll(proposal.getOffers());
-                }
+                pendingOffers.values().removeAll(proposal.getOffers());
 
                 throw e;
             } finally {
@@ -834,6 +822,9 @@ public class SharedCoin extends HttpServlet {
         private volatile boolean isFinalized = false;
         private volatile boolean isBroadcast = false;
 
+        private AtomicBoolean isPushing = new AtomicBoolean();
+        private ReadWriteLock finalizingLock = new ReentrantReadWriteLock();
+
         public static Map<String, Number> getTargets() {
             return (Map) Settings.instance().getMap("proposal_targets");
         }
@@ -855,7 +846,7 @@ public class SharedCoin extends HttpServlet {
             return null;
         }
 
-        public synchronized boolean sanityCheckBeforePush() throws Exception {
+        public boolean sanityCheckBeforePush() throws Exception {
 
             final Transaction tx = getTransaction();
 
@@ -893,9 +884,9 @@ public class SharedCoin extends HttpServlet {
 
             final Map<Long, Long> offerIDToValueOutput = new HashMap<>();
             for (TransactionOutput output : tx.getOutputs()) {
-                final String destinationAddress = output.getScriptPubKey().getToAddress().toString();
+                final String destinationAddress = output.getScriptPubKey().getToAddress(MainNetParams.get()).toString();
 
-                if (OurWallet.getInstance().isOurAddress(output.getScriptPubKey().getToAddress().toString())) {
+                if (OurWallet.getInstance().isOurAddress(output.getScriptPubKey().getToAddress(MainNetParams.get()).toString())) {
                     continue; //One of our addresses, looks good
                 }
 
@@ -976,131 +967,157 @@ public class SharedCoin extends HttpServlet {
         ;
 
 
-        public synchronized boolean pushTransaction() throws Exception {
-            CompletedTransaction completedTransaction;
+        public boolean pushTransaction() throws Exception {
+            if (isPushing.compareAndSet(false, true)) {
+                try {
+                    CompletedTransaction completedTransaction;
 
-            if (!isFinalized) {
-                throw new Exception("Cannot push transaction, not finalized");
-            }
+                    if (!isFinalized) {
+                        throw new Exception("Cannot push transaction, not finalized");
+                    }
 
-            final Transaction tx = getTransaction();
+                    final Transaction tx = getTransaction();
 
-            if (tx == null) {
-                throw new Exception("pushTransaction() tx null");
-            }
+                    if (tx == null) {
+                        throw new Exception("pushTransaction() tx null");
+                    }
 
-            if (findCompletedTransaction(new Hash(tx.getHash().getBytes())) != null) {
-                throw new Exception("Proposal Already Pushed");
-            }
+                    if (findCompletedTransaction(new Hash(tx.getHash().getBytes())) != null) {
+                        throw new Exception("Proposal Already Pushed");
+                    }
 
-            if (!sanityCheckBeforePush()) {
-                Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
+                    if (!sanityCheckBeforePush()) {
+                        Logger.log(Logger.SeverityINFO, "!sanityCheckBeforePush() Remove Active Proposal " + getProposalID());
 
-                activeProposals.remove(getProposalID());
+                        activeProposals.remove(getProposalID());
 
-                throw new Exception("Sanity Check Returned False");
-            }
+                        throw new Exception("Sanity Check Returned False");
+                    }
 
-            completedTransaction = new CompletedTransaction();
+                    completedTransaction = new CompletedTransaction();
 
-            completedTransaction.isConfirmedBroadcastSuccessfully = false;
-            completedTransaction.transaction = tx;
-            completedTransaction.completedTime = System.currentTimeMillis();
-            completedTransaction.pushCount = 0;
-            completedTransaction.lastCheckedConfirmed = 0;
-            completedTransaction.proposalID = getProposalID();
-            completedTransaction.nParticipants = getOffers().size();
-            completedTransaction.fee = getTransactionFee();
+                    completedTransaction.isConfirmedBroadcastSuccessfully = false;
+                    completedTransaction.transaction = tx;
+                    completedTransaction.completedTime = System.currentTimeMillis();
+                    completedTransaction.pushCount = 0;
+                    completedTransaction.lastCheckedConfirmed = 0;
+                    completedTransaction.proposalID = getProposalID();
+                    completedTransaction.nParticipants = getOffers().size();
+                    completedTransaction.fee = getTransactionFee();
 
-            Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
+                    Logger.log(Logger.SeverityINFO, "pushTransaction() Remove Active Proposal " + getProposalID());
 
-            putRecentlyCompleted(completedTransaction);
+                    putRecentlyCompleted(completedTransaction);
 
-            multiThreadExec.submit(new Runnable() {
-                @Override
-                public void run() {
-                    saveRecentlyCompleted();
+                    multiThreadExec.submit(new Runnable() {
+                        @Override
+                        public void run() {
+                            saveRecentlyCompleted();
+                        }
+                    });
+
+                    activeProposals.remove(getProposalID());
+
+                    boolean pushed = completedTransaction.pushTransaction();
+
+                    isBroadcast = pushed;
+
+                    synchronized (this) {
+                        this.notifyAll();
+                    }
+
+                    return pushed;
+                } finally {
+                    isPushing.set(false);
                 }
-            });
-
-            activeProposals.remove(getProposalID());
-
-            boolean pushed = completedTransaction.pushTransaction();
-
-            isBroadcast = pushed;
-
-            synchronized (this) {
-                this.notifyAll();
             }
 
-            return pushed;
+            return false;
         }
 
-        public synchronized void finalizeTransaction() throws Exception {
+        public void finalizeTransaction() throws Exception {
+            Lock writeLock = finalizingLock.writeLock();
 
-            if (isFinalized) {
-                return;
-            }
-
+            writeLock.lock();
             try {
-                if (getNSigned() < getNSignaturesNeeded()) {
-                    throw new Exception("Cannot finalize transaction as not all inputs are signed");
+                if (isFinalized) {
+                    return;
                 }
 
-                int ii = 0;
-                for (TransactionInput input : transaction.getInputs()) {
-                    Script inputScript = input_scripts.get(ii);
-
-                    if (inputScript != null) {
-                        input.scriptBytes = inputScript.program;
-                        input.scriptSig = null;
-                    }
-
-                    ++ii;
-                }
-
-                Wallet wallet = new Wallet(NetworkParameters.prodNet());
-
-                //Sign our inputs
                 try {
-                    Lock lock = OurWallet.getInstance().updateLock.readLock();
-
-                    lock.lock();
-                    try {
-                        MyWallet myWallet = OurWallet.getInstance().getWalletNoLock();
-
-                        for (TransactionInput input : transaction.getInputs()) {
-                            if (input.getScriptBytes() == null || input.getScriptBytes().length == 0) {
-                                if (input.getOutpoint() == null) {
-                                    throw new Exception("Input hash null outpoint " + input + " " + transaction);
-                                }
-
-                                String address = input.getOutpoint().getConnectedOutput().getScriptPubKey().getToAddress().toString();
-
-                                ECKey key = myWallet.getECKey(address.toString());
-
-                                wallet.addKey(key);
-                            }
-                        }
-                    } finally {
-                        lock.unlock();
+                    if (getNSigned() < getNSignaturesNeeded()) {
+                        throw new Exception("Cannot finalize transaction as not all inputs are signed");
                     }
 
-                    transaction.signInputs(Transaction.SigHash.ALL, wallet);
+                    int ii = 0;
+                    for (TransactionInput input : transaction.getInputs()) {
+                        Script inputScript = input_scripts.get(ii);
+
+                        if (inputScript != null) {
+                            input.setScriptSig(inputScript);
+                        }
+
+                        ++ii;
+                    }
+
+                    KeyChainGroup wallet = new KeyChainGroup(NetworkParameters.prodNet());
+
+                    //Sign our inputs
+                    try {
+                        Lock lock = OurWallet.getInstance().updateLock.readLock();
+
+                        lock.lock();
+                        try {
+                            MyWallet myWallet = OurWallet.getInstance().getWalletNoLock();
+
+                            for (TransactionInput input : transaction.getInputs()) {
+                                if (input.getScriptBytes() == null || input.getScriptBytes().length == 0) {
+                                    if (input.getOutpoint() == null) {
+                                        throw new Exception("Input hash null outpoint " + input + " " + transaction);
+                                    }
+
+                                    Script scriptPubKey = input.getConnectedOutput().getScriptPubKey();
+
+                                    if (scriptPubKey == null) {
+                                        throw new Exception("scriptPubKey is null");
+                                    }
+
+                                    String address = input.getOutpoint().getConnectedOutput().getScriptPubKey().getToAddress(MainNetParams.get()).toString();
+
+                                    ECKey key = myWallet.getECKey(address);
+                                    if (key == null) {
+                                        throw new Exception("Unable to find ECKey for scriptPubKey " + scriptPubKey);
+                                    }
+
+                                    input.setScriptSig(scriptPubKey.createEmptyInputScript(key, null));
+
+                                    wallet.importKeys(key);
+                                }
+                            }
+                        } finally {
+                            lock.unlock();
+                        }
+
+                        TransactionSigner.ProposedTransaction proposal = new TransactionSigner.ProposedTransaction(transaction);
+
+                        LocalTransactionSigner signer = new LocalTransactionSigner();
+
+                        if (!signer.signInputs(proposal, wallet))
+                            throw new Exception("signInputs() returned false for the tx " + signer.getClass().getName());
+                    } catch (Exception e) {
+                        Logger.log(Logger.SeveritySeriousError, e);
+
+                        throw new Exception("Error signing our inputs");
+                    }
+
+
+                    isFinalized = true;
                 } catch (Exception e) {
-
-                    Logger.log(Logger.SeverityWARN, e);
-
-                    Logger.log(Logger.SeverityWARN, wallet.getKeys());
-
-                    throw new Exception("Error signing our inputs");
+                    isFinalized = false;
+                    throw e;
                 }
-
-
-                isFinalized = true;
-            } catch (Exception e) {
-                isFinalized = false;
-                throw e;
+            } finally {
+                writeLock.unlock();
             }
         }
 
@@ -1209,17 +1226,17 @@ public class SharedCoin extends HttpServlet {
             if (tx == null)
                 return 0;
 
-            BigInteger totalValueOutput = BigInteger.ZERO;
+            long totalValueOutput = 0;
             for (TransactionOutput output : tx.getOutputs()) {
-                totalValueOutput = totalValueOutput.add(output.getValue());
+                totalValueOutput += output.getValue().longValue();
             }
 
-            BigInteger totalValueInput = BigInteger.ZERO;
+            long totalValueInput = 0;
             for (TransactionInput input : tx.getInputs()) {
-                totalValueInput = totalValueInput.add(input.getOutpoint().getConnectedOutput().getValue());
+                totalValueInput += input.getOutpoint().getConnectedOutput().getValue().longValue();
             }
 
-            return totalValueInput.subtract(totalValueOutput).longValue();
+            return totalValueInput - totalValueOutput;
         }
 
         public long getNSigned() {
@@ -1495,7 +1512,7 @@ public class SharedCoin extends HttpServlet {
                 final Output outOne = new Output();
 
                 outOne.excludeFromFee = false;
-                outOne.script = Script.createOutputScript(getRandomAddressNotInUse(unspent));
+                outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
                 outOne.value = splitValue;
 
                 newOffer.addRequestedOutput(outOne);
@@ -1522,7 +1539,7 @@ public class SharedCoin extends HttpServlet {
                         final Output outOne = new Output();
 
                         outOne.excludeFromFee = false;
-                        outOne.script = Script.createOutputScript(getRandomAddressNotInUse(unspent));
+                        outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
                         outOne.value = splitValue;
 
                         newOffer.addRequestedOutput(outOne);
@@ -1738,7 +1755,7 @@ public class SharedCoin extends HttpServlet {
 
                 //Add all the outputs
                 for (Output outputRequest : allRequestedOutputs) {
-                    TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, BigInteger.valueOf(outputRequest.value), outputRequest.script);
+                    TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, Coin.valueOf(outputRequest.value), outputRequest.script);
 
                     synchronized (transaction) {
                         transaction.addOutput(out);
@@ -1758,12 +1775,12 @@ public class SharedCoin extends HttpServlet {
 
                 BigInteger totalValueOutput = BigInteger.ZERO;
                 for (TransactionOutput output : transaction.getOutputs()) {
-                    totalValueOutput = totalValueOutput.add(output.getValue());
+                    totalValueOutput = totalValueOutput.add(BigInteger.valueOf(output.getValue().longValue()));
                 }
 
                 BigInteger totalValueInput = BigInteger.ZERO;
                 for (TransactionInput input : transaction.getInputs()) {
-                    totalValueInput = totalValueInput.add(input.getOutpoint().getConnectedOutput().getValue());
+                    totalValueInput = totalValueInput.add(BigInteger.valueOf(input.getOutpoint().getConnectedOutput().getValue().longValue()));
                 }
 
                 if (totalValueInput.compareTo(totalValueOutput) < 0) {
@@ -1866,10 +1883,10 @@ public class SharedCoin extends HttpServlet {
                         //maxN is the maximum number of inputs to select
                         //We do this to combine inputs so the wallet doesn't always become fragmented
                         int maxN = 1;
-                        if (numberOfInputs < targetNumberOfInputs-3
+                        if (numberOfInputs < targetNumberOfInputs - 3
                                 && numberOfInputs < numberOfOutputs + 3
                                 && OurWallet.getInstance().walletIsFragmented()) {
-                                maxN = 2;
+                            maxN = 2;
                         }
 
                         final List<MyTransactionOutPoint> suitableOutPoints = findSuitableOutpoints(allUnspent, valueNeeded.longValue(), maxN);
@@ -1882,7 +1899,7 @@ public class SharedCoin extends HttpServlet {
 
                         BigInteger totalSuitableValue = BigInteger.ZERO;
                         for (MyTransactionOutPoint suitableOutPoint : suitableOutPoints) {
-                            totalSuitableValue = totalSuitableValue.add(suitableOutPoint.getValue());
+                            totalSuitableValue = totalSuitableValue.add(BigInteger.valueOf(suitableOutPoint.getValue().longValue()));
                         }
 
                         //Make sure the difference is less than the change value (i.e. we have enough change to spend)
@@ -1898,7 +1915,7 @@ public class SharedCoin extends HttpServlet {
                                 transaction.addInput(input);
                             }
 
-                            change = change.add(suitableOutPoint.getValue());
+                            change = change.add(BigInteger.valueOf(suitableOutPoint.getValue().longValue()));
                         }
                     }
 
@@ -1906,7 +1923,7 @@ public class SharedCoin extends HttpServlet {
 
                     //If it is add an output with the difference value
                     synchronized (transaction) {
-                        transaction.addOutput(differenceBN, getRandomAddressNotInUse(allUnspent));
+                        transaction.addOutput(Coin.valueOf(differenceBN.longValue()), getRandomAddressNotInUse(allUnspent));
                     }
                     change = change.subtract(differenceBN);
 
@@ -1945,7 +1962,7 @@ public class SharedCoin extends HttpServlet {
                                 if (rounded.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && rounded.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
 
                                     synchronized (transaction) {
-                                        transaction.addOutput(rounded, getRandomAddressNotInUse(allUnspent));
+                                        transaction.addOutput(Coin.valueOf(rounded.longValue()), getRandomAddressNotInUse(allUnspent));
                                     }
                                     change = change.subtract(rounded);
 
@@ -1998,7 +2015,7 @@ public class SharedCoin extends HttpServlet {
 
                 if (change.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
                     synchronized (transaction) {
-                        transaction.addOutput(change, getRandomAddressNotInUse(allUnspent));
+                        transaction.addOutput(Coin.valueOf(change.longValue()), getRandomAddressNotInUse(allUnspent));
                     }
                 }
 
@@ -2016,11 +2033,11 @@ public class SharedCoin extends HttpServlet {
                         if (suitableOutPoints != null) {
                             final MyTransactionOutPoint suitableOutPoint = suitableOutPoints.get(0);
 
-                            BigInteger changeOutpoint = suitableOutPoint.getValue().subtract(extraFeeNeeded);
+                            long changeOutpoint = suitableOutPoint.getValue().longValue() - extraFeeNeeded.longValue();
 
                             //If the change is less than MinimumNoneStandardOutputValue just leave it as miners fee
-                            if (changeOutpoint.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
-                                TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, changeOutpoint, Script.createOutputScript(getRandomAddressNotInUse(allUnspent)));
+                            if (changeOutpoint > MinimumNoneStandardOutputValue) {
+                                TransactionOutput out = new TransactionOutput(NetworkParameters.prodNet(), transaction, Coin.valueOf(changeOutpoint), ScriptBuilder.createOutputScript(getRandomAddressNotInUse(allUnspent)).getProgram());
 
                                 synchronized (transaction) {
                                     transaction.addOutput(out);
@@ -2041,7 +2058,7 @@ public class SharedCoin extends HttpServlet {
 
                 Collections.shuffle(transaction.getOutputs());
 
-                transaction.hash = null;
+                transaction.unCache();
 
                 this.transaction = transaction;
 
@@ -2133,10 +2150,7 @@ public class SharedCoin extends HttpServlet {
 
 
     public static Offer findOffer(long offerID) {
-        final Offer offer;
-        synchronized (pendingOffers) {
-            offer = pendingOffers.get(offerID);
-        }
+        final Offer offer = pendingOffers.get(offerID);
 
         if (offer != null)
             return offer;
@@ -2175,10 +2189,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findActiveOfferTargetingAddress(String address) {
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
         for (Offer offer : offers) {
             for (Output output : offer.getRequestedOutputs())
@@ -2209,10 +2220,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public static Offer findOfferConsumingAddress(String address) throws ScriptException {
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
         for (Offer offer : offers) {
             for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints())
@@ -2263,7 +2271,7 @@ public class SharedCoin extends HttpServlet {
             try {
                 TransactionOutPoint outPoint = input.getOutpoint();
 
-                final Address fromAddress = newScript(outPoint.getConnectedPubKeyScript()).getToAddress();
+                final Address fromAddress = newScript(outPoint.getConnectedPubKeyScript()).getToAddress(MainNetParams.get());
 
                 if (fromAddress.toString().equals(address)) {
                     return true;
@@ -2293,7 +2301,7 @@ public class SharedCoin extends HttpServlet {
         long now = System.currentTimeMillis();
 
         for (final CompletedTransaction completedTransaction : recentlyCompletedTransactions.values()) {
-            if (completedTransaction.getCompletedTime() < now-maxAge) {
+            if (completedTransaction.getCompletedTime() < now - maxAge) {
                 continue;
             }
 
@@ -2332,7 +2340,7 @@ public class SharedCoin extends HttpServlet {
             synchronized (transaction) {
                 for (TransactionOutput output : transaction.getOutputs()) {
                     try {
-                        Address toAddress = output.getScriptPubKey().getToAddress();
+                        Address toAddress = output.getScriptPubKey().getToAddress(MainNetParams.get());
 
                         if (toAddress.toString().equals(address))
                             return transaction;
@@ -2386,11 +2394,7 @@ public class SharedCoin extends HttpServlet {
 
 
     public static Offer findOfferConsumingOutpoint(Hash hash, int index) {
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
-
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
         for (Offer offer : offers) {
             if (offer.spendsOutpoint(hash, index)) {
@@ -2455,12 +2459,12 @@ public class SharedCoin extends HttpServlet {
 
         @Override
         public TransactionOutput getConnectedOutput() {
-            return new TransactionOutput(params, null, value, script.program);
+            return new TransactionOutput(params, null, Coin.valueOf(value.longValue()), script.getProgram());
         }
 
         @Override
         public byte[] getConnectedPubKeyScript() {
-            return script.program;
+            return script.getProgram();
         }
     }
 
@@ -2485,7 +2489,7 @@ public class SharedCoin extends HttpServlet {
 
         public Address getAddress() {
             try {
-                return getScript().getToAddress();
+                return getScript().getToAddress(MainNetParams.get());
             } catch (ScriptException e) {
                 e.printStackTrace();
                 return null;
@@ -2567,7 +2571,7 @@ public class SharedCoin extends HttpServlet {
         }
 
         public String getAddress() throws ScriptException {
-            return getScript().getToAddress().toString();
+            return getScript().getToAddress(MainNetParams.get()).toString();
         }
 
         public Hash getHash() {
@@ -2592,7 +2596,6 @@ public class SharedCoin extends HttpServlet {
         private List<Output> requestedOutputs = new CopyOnWriteArrayList<>();
         private double feePercent;
         private transient Token token;
-        private transient MyTransaction zeroConfirmationTransactionAllowedToSpend;
         private transient long forceProposalMaxAge;
         private transient String hashedUserIP;
 
@@ -2779,10 +2782,8 @@ public class SharedCoin extends HttpServlet {
             return;
         }
 
-        final List<Offer> offers;
-        synchronized (pendingOffers) {
-            offers = new ArrayList<>(pendingOffers.values());
-        }
+        final List<Offer> offers = new ArrayList<>(pendingOffers.values());
+
 
         req.setAttribute("pending_offers", offers);
 
@@ -3063,8 +3064,6 @@ public class SharedCoin extends HttpServlet {
                                 //Allow unconfirmed inputs from transaction we created
                                 if (!isTransactionCreatedByUs(hash)) {
                                     throw new Exception("Only confirmed inputs accepted " + hash);
-                                } else {
-                                    offer.zeroConfirmationTransactionAllowedToSpend = transaction;
                                 }
                             }
 
@@ -3145,11 +3144,11 @@ public class SharedCoin extends HttpServlet {
 
                             Output outputContainer = new Output();
 
-                            outputContainer.script = script.program;
+                            outputContainer.script = script.getProgram();
                             outputContainer.value = value;
                             outputContainer.excludeFromFee = excludeFromFee;
 
-                            if (offer.getRequestedOutputAddresses().contains(script.getToAddress().toString())) {
+                            if (offer.getRequestedOutputAddresses().contains(script.getToAddress(MainNetParams.get()).toString())) {
                                 throw new Exception("Each Output Address must be unique");
                             }
 
@@ -3336,9 +3335,8 @@ public class SharedCoin extends HttpServlet {
                                 obj.put("status", "complete");
                                 obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                                byte[] serialized = stream.toByteArray();
+                                byte[] serialized = completedTransaction.getTransaction().bitcoinSerialize();
+
                                 obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                             } else {
                                 obj.put("status", "not_found");
@@ -3351,11 +3349,7 @@ public class SharedCoin extends HttpServlet {
                             obj.put("status", "complete");
                             obj.put("tx_hash", tx.getHash().toString());
 
-                            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                            tx.bitcoinSerializeToStream(stream);
-
-                            byte[] serialized = stream.toByteArray();
+                            byte[] serialized = tx.bitcoinSerialize();
 
                             obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                         } else {
@@ -3378,11 +3372,7 @@ public class SharedCoin extends HttpServlet {
 
                                 obj.put("status", "signatures_needed");
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                                tx.bitcoinSerializeToStream(stream);
-
-                                byte[] serialized = stream.toByteArray();
+                                byte[] serialized = tx.bitcoinSerialize();
 
                                 obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
 
@@ -3392,7 +3382,7 @@ public class SharedCoin extends HttpServlet {
 
                                     pairObj.put("offer_outpoint_index", request.offer_outpoint_index);
                                     pairObj.put("tx_input_index", request.tx_input_index);
-                                    pairObj.put("connected_script", new String(Hex.encode(request.connected_script.program), "UTF-8"));
+                                    pairObj.put("connected_script", new String(Hex.encode(request.connected_script.getProgram()), "UTF-8"));
 
                                     array.add(pairObj);
                                 }
@@ -3438,9 +3428,7 @@ public class SharedCoin extends HttpServlet {
                                     obj.put("status", "complete");
                                     obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
 
-                                    ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                                    completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                                    byte[] serialized = stream.toByteArray();
+                                    byte[] serialized = completedTransaction.getTransaction().bitcoinSerialize();
                                     obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                                 }
                             } else {
@@ -3461,11 +3449,7 @@ public class SharedCoin extends HttpServlet {
                                 obj.put("status", "complete");
                                 obj.put("tx_hash", tx.getHash().toString());
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                                tx.bitcoinSerializeToStream(stream);
-
-                                byte[] serialized = stream.toByteArray();
+                                byte[] serialized = tx.bitcoinSerialize();
 
                                 obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                             } else {
@@ -3503,9 +3487,8 @@ public class SharedCoin extends HttpServlet {
                                 obj.put("status", "complete");
                                 obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-                                completedTransaction.getTransaction().bitcoinSerializeToStream(stream);
-                                byte[] serialized = stream.toByteArray();
+                                byte[] serialized = completedTransaction.getTransaction().bitcoinSerialize();
+
                                 obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                             } else {
                                 obj.put("status", "not_found");
@@ -3524,11 +3507,7 @@ public class SharedCoin extends HttpServlet {
                                 obj.put("status", "complete");
                                 obj.put("tx_hash", tx.getHash().toString());
 
-                                ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-                                tx.bitcoinSerializeToStream(stream);
-
-                                byte[] serialized = stream.toByteArray();
+                                byte[] serialized = tx.bitcoinSerialize();
 
                                 obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
                             } else {
@@ -3561,25 +3540,11 @@ public class SharedCoin extends HttpServlet {
                                     Script connected_script = outpoint.getScript();
 
                                     try {
-                                        if (!BitcoinScript.IsCanonicalSignature(bitcoinJInputScript.getSignature())) {
-                                            throw new ScriptException("IsCanonicalSignature() returned false");
-                                        }
-
-                                        BitcoinScript inputBitcoinScript = new BitcoinScript(inputScriptBytes);
-
-                                        if (!inputBitcoinScript.IsPushOnly()) {
-                                            throw new ScriptException("IsPushOnly() returned false");
-                                        }
-
-                                        if (!inputBitcoinScript.HasCanonicalPushes()) {
-                                            throw new ScriptException("HasCanonicalPushes() returned false");
-                                        }
-
                                         final Transaction tx = proposal.getTransaction();
 
                                         assert (tx != null);
 
-                                        bitcoinJInputScript.correctlySpends(tx, tx_input_index, connected_script, true);
+                                        bitcoinJInputScript.correctlySpends(tx, tx_input_index, connected_script, Script.ALL_VERIFY_FLAGS);
 
                                         proposal.input_scripts.put(tx_input_index, bitcoinJInputScript);
 
@@ -3604,11 +3569,9 @@ public class SharedCoin extends HttpServlet {
                                         @Override
                                         public void run() {
                                             try {
-                                                synchronized (proposal) {
-                                                    proposal.finalizeTransaction();
+                                                proposal.finalizeTransaction();
 
-                                                    proposal.pushTransaction();
-                                                }
+                                                proposal.pushTransaction();
                                             } catch (Exception e) {
                                                 Logger.log(Logger.SeveritySeriousError, e);
                                             }
@@ -3634,11 +3597,9 @@ public class SharedCoin extends HttpServlet {
                                     @Override
                                     public void run() {
                                         try {
-                                            synchronized (proposal) {
-                                                proposal.finalizeTransaction();
+                                            proposal.finalizeTransaction();
 
-                                                proposal.pushTransaction();
-                                            }
+                                            proposal.pushTransaction();
                                         } catch (Exception e) {
                                             Logger.log(Logger.SeveritySeriousError, e);
                                         }

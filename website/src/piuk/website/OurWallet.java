@@ -1,6 +1,6 @@
 package piuk.website;
 
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import org.apache.commons.lang3.ArrayUtils;
@@ -132,7 +132,7 @@ public class OurWallet {
         //Prppend a zero byte to make the biginteger unsigned
         byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], bytes);
 
-        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
+        ECKey ecKey = ECKey.fromPrivate(new BigInteger(appendZeroByte));
 
         return ecKey;
     }
@@ -605,7 +605,7 @@ public class OurWallet {
 
         @Override
         public void run(MyRemoteWallet wallet) throws Exception {
-            wallet.addKey(key, null, Math.random() >= 0.5, "sharedcoin", "" + SharedCoin.ProtocolVersion);
+            wallet.addKey(key, null, "sharedcoin", "" + SharedCoin.ProtocolVersion);
         }
     }
 
@@ -633,9 +633,8 @@ public class OurWallet {
         try {
             MyRemoteWallet wallet = getWalletNoLock();
 
-            String compressed = key.toAddressCompressed(NetworkParameters.prodNet()).toString();
 
-            String returnVal = wallet.addKey(key, null, !address.equals(compressed), "sharedcoin", "" + SharedCoin.ProtocolVersion);
+            String returnVal = wallet.addKey(key, null, "sharedcoin", "" + SharedCoin.ProtocolVersion);
 
             if (returnVal.equals(address)) {
                 if (wallet.remoteSave(null)) {

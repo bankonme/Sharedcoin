@@ -1,19 +1,12 @@
 package piuk;
 
-import java.math.BigInteger;
-
-import com.google.bitcoin.core.Address;
-import com.google.bitcoin.core.AddressFormatException;
-import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.core.Transaction;
-import com.google.bitcoin.core.TransactionInput;
-import com.google.bitcoin.core.TransactionOutPoint;
+import org.bitcoinj.core.*;
 
 public class MyTransactionInput extends TransactionInput {
 	private static final long serialVersionUID = 1L;
 	
 	public String address;
-	public BigInteger value;
+	public Coin value;
 	public NetworkParameters params;
 	
 	public MyTransactionInput(NetworkParameters params, Transaction parentTransaction, byte[] scriptBytes, TransactionOutPoint outpoint) {
@@ -31,12 +24,13 @@ public class MyTransactionInput extends TransactionInput {
 		}
 		return null;
 	}
-	
-	public BigInteger getValue() {
+
+	@Override
+	public Coin getValue() {
 		return value;
 	}
 
-	public void setValue(BigInteger value) {
+	public void setValue(Coin value) {
 		this.value = value;
 	}
 }

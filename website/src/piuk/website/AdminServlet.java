@@ -1,8 +1,6 @@
 package piuk.website;
 
-import com.google.bitcoin.core.Base58;
-import com.google.bitcoin.core.ECKey;
-import com.google.bitcoin.core.NetworkParameters;
+import org.bitcoinj.core.*;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringEscapeUtils;
@@ -118,17 +116,6 @@ public class AdminServlet extends HttpServlet {
         }
     }
 
-    public static ECKey decodeBase58PK(String base58Priv) throws Exception {
-        byte[] privBytes = Base58.decode(base58Priv);
-
-        // Prepend a zero byte to make the biginteger unsigned
-        byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
-
-        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
-
-        return ecKey;
-    }
-
     public static List<String> getApiRoots() {
         return (List)Settings.instance().getList("api_roots");
     }
@@ -170,7 +157,7 @@ public class AdminServlet extends HttpServlet {
                     throw new Exception("Key null address " + address);
                 }
 
-                ECKey ecKey = decodeBase58PK(key);
+                ECKey ecKey = MyWallet.decodeBase58PK(address, key);
 
                 if (!OurWallet.getInstance().addECKey(address, ecKey))
                     throw new Exception("Error Importing ECKey");
@@ -195,9 +182,9 @@ public class AdminServlet extends HttpServlet {
 
             final String PKString = Base58.encode(key.getPrivKeyBytes());
 
-            final String addressUncompressed = key.toAddress(NetworkParameters.prodNet()).toString();
+            final String addressUncompressed = key.decompress().toAddress(NetworkParameters.prodNet()).toString();
 
-            final String addressCompressed = key.toAddressCompressed(NetworkParameters.prodNet()).toString();
+            final String addressCompressed = key.toAddress(NetworkParameters.prodNet()).toString();
 
             keys.add(new Pair<>(addressCompressed, PKString));
 

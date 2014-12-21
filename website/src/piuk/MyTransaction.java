@@ -17,7 +17,7 @@
 
 package piuk;
 
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
 import org.spongycastle.util.encoders.Hex;
 
 import java.io.Serializable;
@@ -35,6 +35,7 @@ public class MyTransaction extends Transaction implements Serializable {
 	public boolean double_spend;
 	public int txIndex;
 	public BigInteger result;
+	public long version;
 
 	public static long getSerialversionuid() {
 		return serialVersionUID;
@@ -58,11 +59,6 @@ public class MyTransaction extends Transaction implements Serializable {
 
 	public BigInteger getResult() {
 		return result;
-	}
-	
-	@Override
-	public synchronized TransactionConfidence getConfidence() {
-		return new MyTransactionConfidence(this, height, double_spend);
 	}
 
 	public String getTag() {
@@ -96,10 +92,11 @@ public class MyTransaction extends Transaction implements Serializable {
 		return true;
 	}
 
-	public MyTransaction(NetworkParameters params, int version, Sha256Hash hash) {
-		super(params, version, hash);
+	public MyTransaction(NetworkParameters params, long version, Sha256Hash hash) {
+		super(params);
 
 		this.hash = hash;
+		this.version = version;
 	}
 
 	public void setTxIndex(int txIndex) {
@@ -112,8 +109,8 @@ public class MyTransaction extends Transaction implements Serializable {
 	}
 
 	@Override
-	public BigInteger getValueSentToMe(Wallet wallet) {
-		return result;
+	public long getVersion() {
+		return version;
 	}
 
 	@Override
@@ -198,7 +195,7 @@ public class MyTransaction extends Transaction implements Serializable {
 						(String) prev_out_dict.get("addr")).toString();
 
 			if ((Number) prev_out_dict.get("value") != null)
-				input.value = BigInteger.valueOf(((Number) prev_out_dict
+				input.value = Coin.valueOf(((Number) prev_out_dict
 						.get("value")).longValue());
 
 			tx.addInput(input);
@@ -211,7 +208,7 @@ public class MyTransaction extends Transaction implements Serializable {
 			if (tx.tag == null)
 				tx.tag = (String) outDict.get("addr_tag");
 
-			BigInteger value = BigInteger.valueOf(((Number) outDict
+			Coin value = Coin.valueOf(((Number) outDict
 					.get("value")).longValue());
 
 			Address addr = new Address(NetworkParameters.prodNet(),

@@ -17,10 +17,7 @@
 
 package piuk;
 
-import com.google.bitcoin.core.Base58;
-import com.google.bitcoin.core.ECKey;
-import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.core.Wallet;
+import org.bitcoinj.core.*;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
@@ -81,21 +78,6 @@ public class MyWallet {
 
     public ECKey generateECKey() {
         return new ECKey();
-    }
-
-    // Create a new Wallet
-    protected MyWallet() throws Exception {
-        this.root = new HashMap<String, Object>();
-        root.put("guid", UUID.randomUUID().toString());
-        root.put("sharedKey", UUID.randomUUID().toString());
-
-        List<Map<String, Object>> keys = new ArrayList<Map<String, Object>>();
-        List<Map<String, Object>> address_book = new ArrayList<Map<String, Object>>();
-
-        root.put("keys", keys);
-        root.put("address_book", address_book);
-
-        addKey(generateECKey(), "New");
     }
 
     public String getRandomActiveAddress() throws Exception {
@@ -375,71 +357,24 @@ public class MyWallet {
         }
     }
 
-    public ECKey getECKey(String address) throws Exception {
-        Map<String, Object> key = this.findKey(address);
+    public ECKey getECKey(String addr) throws Exception {
+        List<Map<String, Object>> keysMap = getKeysMap();
 
-        if (key == null) {
-            throw new Exception("Key not found " + address);
-        }
+        //Construct a BitcoinJ wallet containing all our private keys
+        for (Map<String, Object> key : keysMap) {
+            if (key.get("addr").equals(addr)) {
+                String base58Priv = (String) key.get("priv");
 
-        String base58Priv = (String) key.get("priv");
+                if (base58Priv == null) {
+                    return null;
+                }
 
-        if (base58Priv == null) {
-            throw new Exception("Watch Only Bitcoin Address");
-        }
-
-        return this.decodePK(base58Priv);
-    }
-
-    protected void addKeysTobitoinJWallet(Wallet wallet, boolean enableTagFiler, int tagFilter) throws Exception {
-
-        wallet.keychain.clear();
-
-        for (Map<String, Object> key : this.getKeysMap()) {
-
-            String base58Priv = (String) key.get("priv");
-            String addr = (String) key.get("addr");
-
-            if (base58Priv == null) {
-                continue;
-            }
-
-            MyECKey encoded_key = new MyECKey(addr, base58Priv, this);
-
-            if (key.get("label") != null)
-                encoded_key.setLabel((String) key.get("label"));
-
-            Long tag = 0L;
-            if (key.get("tag") != null) {
-                tag = (Long) key.get("tag");
-
-                encoded_key.setTag((int) (long) tag);
-            }
-
-            try {
-                if (!enableTagFiler || tag == tagFilter)
-                    wallet.addKey(encoded_key);
-            } catch (IllegalArgumentException e) {
-                e.printStackTrace();
+                return decodePK(addr, base58Priv);
             }
         }
+
+        return null;
     }
-
-    public static class WalletOverride extends Wallet {
-        public WalletOverride(NetworkParameters params) {
-            super(params);
-        }
-    }
-
-    public Wallet getBitcoinJWallet() throws Exception {
-        // Construct a BitcoinJ wallet containing all our private keys
-        Wallet keywallet = new WalletOverride(params);
-
-        addKeysTobitoinJWallet(keywallet, false, 0);
-
-        return keywallet;
-    }
-
 
     public synchronized boolean removeAddressAndKey(String address) {
         final List<Map<String, Object>> keyMap = getKeysMap();
@@ -468,28 +403,32 @@ public class MyWallet {
         return true;
     }
 
-
-    public String addKey(ECKey key, String label) throws Exception {
-        return addKey(key, label, System.getProperty("device_name"), System.getProperty("device_version"));
-    }
-
     public String addKey(ECKey key, String label, String device_name, String device_version) throws Exception {
-        return addKey(key, label, false, device_name, device_version);
+        return addKey(key, label, 0, device_name, device_version);
     }
 
+    public String addKey(ECKey key, String label, int tag, String device_name, String device_version) throws Exception {
 
-    public String addKey(ECKey key, String label, boolean compressed, String device_name, String device_version) throws Exception {
+        final String address = key.toAddress(params).toString();
+
+        final ECKey existing = getECKey(address);
+
+        if (existing != null && existing.toAddress(NetworkParameters.prodNet()).toString().equals(address)) {
+            return address;
+        }
+
+        final List<Map<String, Object>> keysMap = getKeysMap();
+
         Map<String, Object> map = new HashMap<>();
 
-        String base58Priv = new String(Base58.encode(key.getPrivKeyBytes()));
-
-        String address;
-        if (compressed)
-            address = key.toAddress(params).toString();
-        else
-            address = key.toAddressCompressed(params).toString();
+        map.put("created_device_name", device_name);
+        map.put("created_device_version", device_version);
 
         map.put("addr", address);
+
+        if (tag > 0) {
+            map.put("tag", tag);
+        }
 
         if (label != null) {
             if (label.length() == 0 || label.length() > 255)
@@ -498,28 +437,21 @@ public class MyWallet {
             map.put("label", label);
         }
 
+        String base58Priv = new String(Base58.encode(key.getPrivKeyBytes()));
+
         if (this.isDoubleEncrypted()) {
             if (temporySecondPassword == null)
                 throw new Exception("You must provide a second password");
 
-            map.put("priv", encryptPK(base58Priv, getSharedKey(), temporySecondPassword, this.getDoubleEncryptionPbkdf2Iterations()));
+            map.put("priv", encryptPK(base58Priv, getSharedKey(), temporySecondPassword, getDoubleEncryptionPbkdf2Iterations()));
+
         } else {
             map.put("priv", base58Priv);
         }
 
-        map.put("created_time", System.currentTimeMillis());
+        keysMap.add(map);
 
-        if (device_name != null)
-            map.put("created_device_name", device_name);
-
-        if (device_version != null)
-            map.put("created_device_version", device_version);
-
-        if (getKeysMap().add(map)) {
-            return address;
-        } else {
-            throw new Exception("Error inserting address into keymap");
-        }
+        return address;
     }
 
     public boolean validateSecondPassword(String secondPassword) {
@@ -683,39 +615,37 @@ public class MyWallet {
         return encrypt(key, sharedKey + password, PBKDF2Iterations);
     }
 
-    public static ECKey decodeBase58PK(String base58Priv) throws Exception {
-        byte[] privBytes = Base58.decode(base58Priv);
+
+    public static ECKey decodeBase58PK(String base58Priv, boolean compressed) throws Exception {
+        return makeECKeyFromBytes(Base58.decode(base58Priv), compressed);
+    }
+
+    public static ECKey decodeBase58PK(String address, String base58Priv) throws Exception {
+        ECKey decoded = decodeBase58PK(base58Priv, true);
+
+        if (decoded.toAddress(NetworkParameters.prodNet()).toString().equals(address)) {
+            return decoded;
+        }
+
+        ECKey decompressed = decoded.decompress();
+
+        if (decompressed.toAddress(NetworkParameters.prodNet()).toString().equals(address)) {
+            return decompressed;
+        }
+
+        throw new Exception("decodePK address does not match expected");
+    }
+
+    public static ECKey makeECKeyFromBytes(byte[] privBytes, boolean compressed) throws Exception {
 
         // Prppend a zero byte to make the biginteger unsigned
         byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
 
-        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
+        ECKey ecKey = ECKey.fromPrivate(new BigInteger(appendZeroByte), compressed);
 
         return ecKey;
     }
 
-    public static ECKey decodeBase64PK(String base64Priv) throws Exception {
-        byte[] privBytes = Base64.decode(base64Priv);
-
-        // Prppend a zero byte to make the biginteger unsigned
-        byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
-
-        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
-
-        return ecKey;
-    }
-
-
-    public static ECKey decodeHexPK(String hex) throws Exception {
-        byte[] privBytes = Hex.decode(hex);
-
-        // Prppend a zero byte to make the biginteger unsigned
-        byte[] appendZeroByte = ArrayUtils.addAll(new byte[1], privBytes);
-
-        ECKey ecKey = new ECKey(new BigInteger(appendZeroByte));
-
-        return ecKey;
-    }
 
     public String decryptPK(String base58Priv) throws Exception {
         if (this.isDoubleEncrypted()) {
@@ -729,7 +659,7 @@ public class MyWallet {
         return base58Priv;
     }
 
-    public ECKey decodePK(String base58Priv) throws Exception {
-        return decodeBase58PK(decryptPK(base58Priv));
+    public ECKey decodePK(String address, String base58Priv) throws Exception {
+        return decodeBase58PK(address, decryptPK(base58Priv));
     }
 }

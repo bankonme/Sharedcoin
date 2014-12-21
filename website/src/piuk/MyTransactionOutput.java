@@ -1,6 +1,7 @@
 package piuk;
 
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
+import org.bitcoinj.script.Script;
 
 import java.math.BigInteger;
 
@@ -13,7 +14,7 @@ public class MyTransactionOutput extends TransactionOutput {
     boolean isSpent = false;
 
     MyTransactionOutput(NetworkParameters params, Transaction parent,
-			BigInteger value, Address to, byte[] scriptBytes) {
+			Coin value, Address to, byte[] scriptBytes) {
 		super(params, parent, value, to);
 
 		this.params = params;
@@ -36,8 +37,8 @@ public class MyTransactionOutput extends TransactionOutput {
 	}
 
     @Override
-    public com.google.bitcoin.core.Script getScriptPubKey() throws com.google.bitcoin.core.ScriptException {
-        return new Script(NetworkParameters.prodNet(), scriptBytes, 0, scriptBytes.length);
+    public Script getScriptPubKey() throws ScriptException {
+        return new Script(scriptBytes);
     }
 
     @Override

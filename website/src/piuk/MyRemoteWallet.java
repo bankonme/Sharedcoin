@@ -18,7 +18,7 @@
 
 package piuk;
 
-import com.google.bitcoin.core.*;
+import org.bitcoinj.core.*;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -28,6 +28,13 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.params.HttpConnectionParams;
+import org.bitcoinj.params.MainNetParams;
+import org.bitcoinj.script.Script;
+import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.signers.LocalTransactionSigner;
+import org.bitcoinj.signers.TransactionSigner;
+import org.bitcoinj.wallet.KeyBag;
+import org.bitcoinj.wallet.KeyChainGroup;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.JSONValue;
@@ -165,16 +172,6 @@ public class MyRemoteWallet extends MyWallet {
         return _isNew;
     }
 
-    public MyRemoteWallet() throws Exception {
-        super();
-
-        this.temporyPassword = null;
-
-        this._checksum = null;
-
-        this._isNew = true;
-    }
-
     public MyRemoteWallet(String base64Payload, String password) throws Exception {
         super(base64Payload, password);
 
@@ -244,12 +241,10 @@ public class MyRemoteWallet extends MyWallet {
     private List<MyTransactionOutPoint> filter(List<MyTransactionOutPoint> unspent, List<ECKey> tempKeys) throws Exception {
         List<MyTransactionOutPoint> filtered = new ArrayList<>();
 
-        Set<String> alreadyAskedFor = new HashSet<>();
-
         for (MyTransactionOutPoint output : unspent) {
-            BitcoinScript script = new BitcoinScript(output.getScriptBytes());
+            Script script = new Script(output.getScriptBytes());
 
-            String addr = script.getAddress().toString();
+            String addr = script.getToAddress(MainNetParams.prodNet()).toString();
 
             Map<String, Object> keyMap = findKey(addr);
 
@@ -273,7 +268,15 @@ public class MyRemoteWallet extends MyWallet {
         //Try without asking for watch only addresses
         List<MyTransactionOutPoint> unspent = filter(allUnspent, tempKeys);
 
-        pair = makeTransaction(unspent, toAddress, changeAddress, amount, baseFee, consumeAllOutputs);
+        KeyChainGroup wallet = new KeyChainGroup(NetworkParameters.prodNet());
+
+        for (String _from : from) {
+            wallet.importKeys(getECKey(_from));
+        }
+
+        wallet.importKeys(tempKeys);
+
+        pair = makeTransaction(wallet, unspent, toAddress, changeAddress, amount, baseFee, consumeAllOutputs);
 
         //Transaction cancelled
         if (pair == null)
@@ -281,16 +284,12 @@ public class MyRemoteWallet extends MyWallet {
 
         Transaction tx = pair.getFirst();
 
-        Wallet wallet = new Wallet(NetworkParameters.prodNet());
+        TransactionSigner.ProposedTransaction proposal = new TransactionSigner.ProposedTransaction(tx);
 
-        for (String _from : from) {
-            wallet.addKey(getECKey(_from));
-        }
+        LocalTransactionSigner signer = new LocalTransactionSigner();
 
-        wallet.addKeys(tempKeys);
-
-        //Now sign the inputs
-        tx.signInputs(Transaction.SigHash.ALL, wallet);
+        if (!signer.signInputs(proposal, wallet))
+            throw new Exception("signInputs() returned false for the tx " + signer.getClass().getName());
 
         return pushTx(tx);
     }
@@ -370,23 +369,6 @@ public class MyRemoteWallet extends MyWallet {
         this.transactions.add(0, tx);
 
         return true;
-    }
-
-    public BigInteger getBaseFee() {
-        BigInteger baseFee = null;
-        if (getFeePolicy() == -1) {
-            baseFee = Utils.toNanoCoins("0.0001");
-        } else if (getFeePolicy() == 1) {
-            baseFee = Utils.toNanoCoins("0.001");
-        } else {
-            baseFee = Utils.toNanoCoins("0.0005");
-        }
-
-        return baseFee;
-    }
-
-    public List<MyTransaction> getTransactions() {
-        return this.transactions;
     }
 
     public void parseMultiAddr(String response) throws Exception {
@@ -581,7 +563,7 @@ public class MyRemoteWallet extends MyWallet {
     }
 
     //You must sign the inputs
-    public Pair<Transaction, Long> makeTransaction(List<MyTransactionOutPoint> unspent, String toAddress, String changeAddress, BigInteger amount, BigInteger baseFee, boolean consumeAllOutputs) throws Exception {
+    public Pair<Transaction, Long> makeTransaction(KeyBag keyWallet, List<MyTransactionOutPoint> unspent, String toAddress, String changeAddress, BigInteger amount, BigInteger baseFee, boolean consumeAllOutputs) throws Exception {
 
         long priority = 0;
 
@@ -594,10 +576,9 @@ public class MyRemoteWallet extends MyWallet {
         //Construct a new transaction
         Transaction tx = new Transaction(params);
 
-        //Add the output
-        BitcoinScript toOutputScript = BitcoinScript.createSimpleOutBitoinScript(new BitcoinAddress(toAddress));
+        final Script toOutputScript = ScriptBuilder.createOutputScript(new Address(MainNetParams.get(), toAddress));
 
-        TransactionOutput output = new TransactionOutput(params, null, amount, toOutputScript.getProgram());
+        final TransactionOutput output = new TransactionOutput(params, null, Coin.valueOf(amount.longValue()), toOutputScript.getProgram());
 
         tx.addOutput(output);
 
@@ -608,18 +589,25 @@ public class MyRemoteWallet extends MyWallet {
 
         for (MyTransactionOutPoint outPoint : unspent) {
 
-            BitcoinScript script = new BitcoinScript(outPoint.getScriptBytes());
+            Script scriptPubKey = outPoint.getConnectedOutput().getScriptPubKey();
 
-            if (script.getOutType() == BitcoinScript.ScriptOutTypeStrange)
-                continue;
+            if (scriptPubKey == null) {
+                throw new Exception("scriptPubKey is null");
+            }
+
+            final ECKey key = keyWallet.findKeyFromPubHash(scriptPubKey.getPubKeyHash());
+
+            if (key == null) {
+                throw new Exception("Unable to find ECKey for scriptPubKey " + scriptPubKey);
+            }
 
             MyTransactionInput input = new MyTransactionInput(params, null, new byte[0], outPoint);
 
-            input.outpoint = outPoint;
-
             tx.addInput(input);
 
-            valueSelected = valueSelected.add(outPoint.getValue());
+            input.setScriptSig(scriptPubKey.createEmptyInputScript(key, null));
+
+            valueSelected = valueSelected.add(BigInteger.valueOf(outPoint.getValue().longValue()));
 
             priority += outPoint.getValue().longValue() * outPoint.confirmations;
 
@@ -644,9 +632,9 @@ public class MyRemoteWallet extends MyWallet {
             throw new Exception("Insufficient Value for Fee. Fix this lazy.");
         } else if (change.compareTo(BigInteger.ZERO) > 0) {
             //Now add the change if there is any
-            final BitcoinScript change_script = BitcoinScript.createSimpleOutBitoinScript(new BitcoinAddress(changeAddress));
+            final Script change_script = ScriptBuilder.createOutputScript(new Address(MainNetParams.get(), changeAddress));
 
-            TransactionOutput change_output = new TransactionOutput(params, null, change, change_script.getProgram());
+            TransactionOutput change_output = new TransactionOutput(params, null, Coin.valueOf(change.longValue()), change_script.getProgram());
 
             tx.addOutput(change_output);
         }
@@ -725,117 +713,6 @@ public class MyRemoteWallet extends MyWallet {
         return outputs;
     }
 
-    /**
-     * Register this account/device pair within the server.
-     *
-     * @throws Exception
-     */
-    public boolean registerNotifications(final String regId) throws Exception {
-        if (_isNew) return false;
-
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + getGUID());
-        args.append("&sharedKey=" + getSharedKey());
-        args.append("&method=register-android-device");
-        args.append("&payload=" + URLEncoder.encode(regId));
-        args.append("&length=" + regId.length());
-
-        String response = postAPI("wallet", args.toString());
-
-        return response != null && response.length() > 0;
-    }
-
-    /**
-     * k
-     * Unregister this account/device pair within the server.
-     *
-     * @throws Exception
-     */
-    public boolean unregisterNotifications(final String regId) throws Exception {
-        if (_isNew) return false;
-
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + getGUID());
-        args.append("&sharedKey=" + getSharedKey());
-        args.append("&method=unregister-android-device");
-        args.append("&payload=" + URLEncoder.encode(regId));
-        args.append("&length=" + regId.length());
-
-        String response = postAPI("wallet", args.toString());
-
-        return response != null && response.length() > 0;
-    }
-
-    public JSONObject getAccountInfo() throws Exception {
-        if (_isNew) return null;
-
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + getGUID());
-        args.append("&sharedKey=" + getSharedKey());
-        args.append("&method=get-info");
-        ;
-
-        String response = postAPI("wallet", args.toString());
-
-        return (JSONObject) new JSONParser().parse(response);
-    }
-
-    public boolean updateRemoteCurrency(String currency_code) throws Exception {
-        if (_isNew) return false;
-
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + getGUID());
-        args.append("&sharedKey=" + getSharedKey());
-        args.append("&payload=" + currency_code);
-        args.append("&length=" + currency_code.length());
-        args.append("&method=update-currency");
-        ;
-
-        String response = postAPI("wallet", args.toString());
-
-        return response != null;
-    }
-
-    /**
-     * Get the tempoary paring encryption password
-     *
-     * @throws Exception
-     */
-    public static String getPairingEncryptionPassword(final String guid) throws Exception {
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + guid);
-        args.append("&method=pairing-encryption-password");
-
-        return postAPI("wallet", args.toString());
-    }
-
-    public static BigInteger getAddressBalance(final String address) throws Exception {
-        return new BigInteger(fetchAPI("q/addressbalance/" + address));
-    }
-
-    public static String getWalletManualPairing(final String guid) throws Exception {
-        StringBuilder args = new StringBuilder();
-
-        args.append("guid=" + guid);
-        args.append("&method=pairing-encryption-password");
-
-        String response = fetchAPI("wallet/" + guid + "?format=json&resend_code=false");
-
-        JSONObject object = (JSONObject) new JSONParser().parse(response);
-
-        String payload = (String) object.get("payload");
-        if (payload == null || payload.length() == 0) {
-            throw new Exception("Error Fetching Wallet Payload");
-        }
-
-        return payload;
-    }
-
     public synchronized boolean remoteSave(String kaptcha) throws Exception {
 
         String payload = this.getPayload();
@@ -882,50 +759,6 @@ public class MyRemoteWallet extends MyWallet {
         _isNew = false;
 
         return true;
-    }
-
-    public void remoteDownload() {
-
-    }
-
-    public String getChecksum() {
-        return _checksum;
-    }
-
-    public synchronized String setPayload(String payload) throws Exception {
-
-        MyRemoteWallet tempWallet = new MyRemoteWallet(payload, temporyPassword);
-
-        this.root = tempWallet.root;
-        this.rootContainer = tempWallet.rootContainer;
-
-        if (this.temporySecondPassword != null && !this.validateSecondPassword(temporySecondPassword)) {
-            this.temporySecondPassword = null;
-        }
-
-        this._checksum = tempWallet._checksum;
-
-        _isNew = false;
-
-        return payload;
-    }
-
-    public static class NotModfiedException extends Exception {
-        private static final long serialVersionUID = 1L;
-    }
-
-    public static String getWalletPayload(String guid, String sharedKey, String checkSumString) throws Exception {
-        String payload = fetchAPI("wallet/wallet.aes.json?guid=" + guid + "&sharedKey=" + sharedKey + "&checksum=" + checkSumString);
-
-        if (payload == null) {
-            throw new Exception("Error downloading wallet");
-        }
-
-        if (payload.equals("Not modified")) {
-            throw new NotModfiedException();
-        }
-
-        return payload;
     }
 
     public static String getWalletPayload(String guid, String sharedKey) throws Exception {

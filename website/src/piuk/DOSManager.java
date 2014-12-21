@@ -1,8 +1,7 @@
 package piuk;
 
+import org.bitcoinj.core.*;
 
-import com.google.bitcoin.core.Transaction;
-import com.google.bitcoin.core.TransactionInput;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import piuk.website.AdminServlet;
