@@ -18,7 +18,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class OurWallet {
     private volatile MyRemoteWallet _cached = null;
-    public ReadWriteLock updateLock = new ReentrantReadWriteLock();
+    public ReadWriteLock updateLock = new ReentrantReadWriteLock(true);
 
     private static boolean _scheduleDivideOutputs = false;
     private static boolean _scheduleCombineOutputs = true;
