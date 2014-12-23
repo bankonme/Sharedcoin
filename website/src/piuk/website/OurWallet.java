@@ -397,9 +397,27 @@ public class OurWallet {
 
             addressesWeRecentlySpent.addAll(toCombineAddresses);
 
-            long split = (long) ((value.longValue() / 2) * (Math.random() + 0.5));
+            BigInteger unRoundedSplit = BigInteger.valueOf((long) ((value.longValue() / 2) * (Math.random() + 0.5)));
 
-            if (wallet.send(toCombineAddresses.toArray(new String[]{}), destinationAddress, changeAddress, BigInteger.valueOf(split), SharedCoin.TransactionFeePer1000Bytes, true)) {
+            //Round the split based on number of significant digits
+            long digitCount = Util.getDigitCount(unRoundedSplit);
+
+            BigInteger finalSplit = unRoundedSplit;
+            for (int ii = 0; ii < 2; ++ii) {
+                BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+
+                BigInteger rounded = unRoundedSplit.divide(modifier).multiply(modifier);
+
+                BigInteger roundedSplitRemainder = value.subtract(rounded);
+
+                if (rounded.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
+                        roundedSplitRemainder.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
+                    finalSplit = rounded;
+                    break;
+                }
+            }
+
+            if (wallet.send(toCombineAddresses.toArray(new String[]{}), destinationAddress, changeAddress, finalSplit, SharedCoin.TransactionFeePer1000Bytes, true)) {
                 Logger.log(Logger.SeverityINFO, "combineOutputs() wallet.send returned true");
             } else {
                 Logger.log(Logger.SeverityINFO, "combineOutputs() wallet.send returned false");
@@ -482,7 +500,27 @@ public class OurWallet {
             }
 
             if (divideAddress != null) {
-                long split = (long) ((divideBalance.longValue() / 2) * (Math.random() + 0.5));
+                BigInteger unRoundedSplit = BigInteger.valueOf((long) ((divideBalance.longValue() / 2) * (Math.random() + 0.5)));
+
+                //Round the split based on number of significant digits
+                long digitCount = Util.getDigitCount(unRoundedSplit);
+
+                BigInteger finalSplit = unRoundedSplit;
+                for (int ii = 0; ii < 2; ++ii) {
+                    BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+
+                    BigInteger rounded = unRoundedSplit.divide(modifier).multiply(modifier);
+
+                    BigInteger roundedSplitRemainder = divideBalance.subtract(rounded);
+
+                    if (rounded.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
+                            roundedSplitRemainder.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
+                        finalSplit = rounded;
+                        break;
+                    }
+                }
+
+                Logger.log(Logger.SeverityINFO, "divideOutputs() divideBalance "  + divideBalance + " rounded split " + finalSplit + " un-rounded " + unRoundedSplit + " digitCount " + digitCount);
 
                 final String destinationAddress;
                 if (unusedAddresses.size() > 0) {
@@ -500,11 +538,11 @@ public class OurWallet {
                     changeAddress = getRandomAddressNoLock();
                 }
 
-                Logger.log(Logger.SeverityINFO, "divideOutputs() Send From [" + divideAddress + "] to destination " + destinationAddress + " value " + split + " changeAddress " + changeAddress);
+                Logger.log(Logger.SeverityINFO, "divideOutputs() Send From [" + divideAddress + "] to destination " + destinationAddress + " value " + finalSplit + " changeAddress " + changeAddress);
 
                 addressesWeRecentlySpent.add(divideAddress);
 
-                wallet.send(new String[]{divideAddress}, destinationAddress, changeAddress, BigInteger.valueOf(split), SharedCoin.TransactionFeePer1000Bytes, true);
+                wallet.send(new String[]{divideAddress}, destinationAddress, changeAddress, finalSplit, SharedCoin.TransactionFeePer1000Bytes, true);
 
                 Logger.log(Logger.SeverityINFO, "divideOutputs() Schedule Divide Again");
 

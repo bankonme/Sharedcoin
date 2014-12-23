@@ -4,6 +4,7 @@ import org.apache.commons.io.IOUtils;
 import org.spongycastle.util.encoders.Hex;
 
 import java.io.DataOutputStream;
+import java.math.BigInteger;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
@@ -31,6 +32,24 @@ public final class Util {
             hostString += "/";
 
         return postURL(hostString, url.getQuery(), null);
+    }
+
+    public static long randomLong(long x, long y) {
+        Random r = new Random();
+        return x + ((long) (r.nextDouble() * (y - x)));
+    }
+
+    public static double randomDouble(double rangeMin, double rangeMax) {
+        return rangeMin + ((rangeMax - rangeMin) * Math.random());
+    }
+
+    public static int getDigitCount(BigInteger number) {
+        double factor = Math.log(2) / Math.log(10);
+        int digitCount = (int) (factor * number.bitLength() + 1);
+        if (BigInteger.TEN.pow(digitCount - 1).compareTo(number) > 0) {
+            return digitCount - 1;
+        }
+        return digitCount;
     }
 
     public static <T> List<List<T>> divideListInSublistsOfNSize(List<T> list, int n) {

@@ -70,8 +70,6 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumOfferNumberOfOutputs = 10;
     private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
-    private static final long MinIterations = Settings.instance().getLong("min_iterations");
-    private static final long MaxIterations = Settings.instance().getLong("max_iterations");
     private static final long RecommendedIterationsMin = Settings.instance().getLong("recommended_min_iterations");
     private static final long RecommendedIterationsMax = Settings.instance().getLong("recommended_max_iterations");
 
@@ -92,8 +90,8 @@ public class SharedCoin extends HttpServlet {
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
     private static final long ProposalExpiryTimeFailedToBroadcast = 1800000; //30 Minutes
 
-    private static final long OfferForceProposalAgeMax = Settings.instance().getLong("offer_force_proposal_age_max"); //When an offer reaches this age force a proposal creation
-    private static final long OfferForceProposalAgeMin = Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
+    private static final long RecommendedForceProposalAgeMax = Settings.instance().getLong("offer_force_proposal_age_max"); //When an offer reaches this age force a proposal creation
+    private static final long RecommendedForceProposalAgeMin = Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
 
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
@@ -809,16 +807,6 @@ public class SharedCoin extends HttpServlet {
         }
     }
 
-
-    public static long randomLong(long x, long y) {
-        Random r = new Random();
-        return x + ((long) (r.nextDouble() * (y - x)));
-    }
-
-    public static double randomDouble(double rangeMin, double rangeMax) {
-        return rangeMin + ((rangeMax - rangeMin) * Math.random());
-    }
-
     public static class Proposal implements Serializable, Comparable<Proposal> {
         static final long serialVersionUID = 1L;
 
@@ -1310,11 +1298,11 @@ public class SharedCoin extends HttpServlet {
 
             double scale;
             if (nDecimals > 4)
-                scale = randomDouble(-2, 6);
+                scale = Util.randomDouble(-2, 6);
             else if (nDecimals > 2)
-                scale = randomDouble(-1, 4);
+                scale = Util.randomDouble(-1, 4);
             else
-                scale = randomDouble(0, 3);
+                scale = Util.randomDouble(0, 3);
 
             return (int) scale + nDecimals;
         }
@@ -3063,7 +3051,7 @@ public class SharedCoin extends HttpServlet {
                                 throw new Exception("Invalid Numerical Value");
                             }
                         } else {
-                            offer.forceProposalMaxAge = randomLong(OfferForceProposalAgeMin, OfferForceProposalAgeMax);
+                            offer.forceProposalMaxAge = Util.randomLong(RecommendedForceProposalAgeMin, RecommendedForceProposalAgeMax);
                         }
 
                         final Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
@@ -3408,9 +3396,16 @@ public class SharedCoin extends HttpServlet {
                         obj.put("maximum_offer_number_of_inputs", MaximumOfferNumberOfInputs);
                         obj.put("maximum_offer_number_of_outputs", MaximumOfferNumberOfOutputs);
                         obj.put("min_supported_version", MinSupportedVersion);
-                        obj.put("recommended_min_iterations", MinIterations);
-                        obj.put("recommended_max_iterations", MaxIterations);
-                        obj.put("recommended_iterations", randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
+                        obj.put("recommended_min_iterations", RecommendedIterationsMin);
+                        obj.put("recommended_max_iterations", RecommendedIterationsMax);
+                        obj.put("recommended_min_wait_time", RecommendedForceProposalAgeMin);
+                        obj.put("recommended_max_wait_time", RecommendedForceProposalAgeMax);
+
+                        //Iterations determined by client after version 5
+                        if (version < 5) {
+                            obj.put("recommended_iterations", Util.randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
+                        }
+
                         obj.put("minimum_fee", MinimumFee);
 
                         res.setContentType("application/json");
