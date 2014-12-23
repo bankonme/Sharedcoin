@@ -70,10 +70,10 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumOfferNumberOfOutputs = 10;
     private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
-    private static final long RecommendedMinIterations = 4;
-    private static final long RecommendedMaxIterations = 10;
-    private static final long RecommendedIterationsMin = 4;
-    private static final long RecommendedIterationsMax = 8;
+    private static final long MinIterations = Settings.instance().getLong("min_iterations");
+    private static final long MaxIterations = Settings.instance().getLong("max_iterations");
+    private static final long RecommendedIterationsMin = Settings.instance().getLong("recommended_min_iterations");
+    private static final long RecommendedIterationsMax = Settings.instance().getLong("recommended_max_iterations");
 
     private static final double MaxChangePercentageSingleUnconfirmedInput = 500;
     private static final double MaxChangePercentageSingleConfirmedInput = 300;
@@ -92,8 +92,8 @@ public class SharedCoin extends HttpServlet {
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
     private static final long ProposalExpiryTimeFailedToBroadcast = 1800000; //30 Minutes
 
-    private static final long OfferForceProposalAgeMax = 60000; //When an offer reaches this age force a proposal creation
-    private static final long OfferForceProposalAgeMin = 20000; //When an offer reaches this age force a proposal creation
+    private static final long OfferForceProposalAgeMax = Settings.instance().getLong("offer_force_proposal_age_max"); //When an offer reaches this age force a proposal creation
+    private static final long OfferForceProposalAgeMin = Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
 
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
@@ -2738,10 +2738,13 @@ public class SharedCoin extends HttpServlet {
                 boolean found = false;
 
                 for (TransactionInput transactionInput : transaction.getInputs()) {
-                    final TransactionOutput connectedOutput = transactionInput.getConnectedOutput();
+                    final TransactionOutPoint connectedOutpoint = transactionInput.getOutpoint();
 
-                    final int index = connectedOutput.getIndex();
-                    final Hash hash = new Hash(connectedOutput.getHash().getBytes());
+                    if (connectedOutpoint == null)
+                        continue;
+
+                    final long index = connectedOutpoint.getIndex();
+                    final Hash hash = new Hash(connectedOutpoint.getHash().getBytes());
 
                     if (hash.equals(outpointWithValue.getHash())
                             && outpointWithValue.getIndex() == index) {
@@ -3405,8 +3408,8 @@ public class SharedCoin extends HttpServlet {
                         obj.put("maximum_offer_number_of_inputs", MaximumOfferNumberOfInputs);
                         obj.put("maximum_offer_number_of_outputs", MaximumOfferNumberOfOutputs);
                         obj.put("min_supported_version", MinSupportedVersion);
-                        obj.put("recommended_min_iterations", RecommendedMinIterations);
-                        obj.put("recommended_max_iterations", RecommendedMaxIterations);
+                        obj.put("recommended_min_iterations", MinIterations);
+                        obj.put("recommended_max_iterations", MaxIterations);
                         obj.put("recommended_iterations", randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
                         obj.put("minimum_fee", MinimumFee);
 

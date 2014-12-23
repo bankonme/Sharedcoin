@@ -7,6 +7,8 @@ import javax.servlet.annotation.WebListener;
 @WebListener
 public class ContextListener implements ServletContextListener {
 
+    public static boolean isShuttingDown = false;
+
     public void contextInitialized(ServletContextEvent sce) {
         System.out.println("contextInitialized()");
 
@@ -28,5 +30,8 @@ public class ContextListener implements ServletContextListener {
     }
 
     public void contextDestroyed(ServletContextEvent sce) {
+        System.out.println("contextDestroyed()");
+
+        isShuttingDown = true;
     }
 }

@@ -17,6 +17,12 @@
 			"number_of_inputs_after_construction" : 25,
 			"number_of_outputs_after_construction" : 20,
 			"number_of_offers" : 2
-		}
+		},
+		"recommended_min_iterations" : 4,
+		"recommended_max_iterations" : 8,
+		"min_iterations" : 4,
+		"max_iterations" : 15,
+		"offer_force_proposal_age_min" : 60000,
+		"offer_force_proposal_age_max" : 120000
  	}
 }
