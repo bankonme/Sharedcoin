@@ -57,7 +57,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxPollTime = 5000;
 
     private static final double DefaultFeePercent = 0.0; //Per rep
-    private static final long MinimumFee = (long) (COIN * 0.0005); //At this point transaction fees start costing more
+    private static final long MinimumFee = (long) (COIN * 0.0005); //Network Fee. At this point transaction fees start costing more
 
     private static final long HardErrorMaximumOutputValue = COIN * 55; //55 BTC
     public static final long MaximumOutputValue = COIN * 50; //50 BTC
@@ -66,8 +66,8 @@ public class SharedCoin extends HttpServlet {
     private static final long MinimumInputValue = (long) (COIN * 0.01); //0.01 BTC
 
     private static final long MaximumInputValue = COIN * 1000; //1000 BTC
-    private static final long MaximumOfferNumberOfInputs = 20;
-    private static final long MaximumOfferNumberOfOutputs = 20;
+    private static final long MaximumOfferNumberOfInputs = 10;
+    private static final long MaximumOfferNumberOfOutputs = 10;
     private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
     private static final long RecommendedMinIterations = 4;
@@ -1075,11 +1075,11 @@ public class SharedCoin extends HttpServlet {
                         ++ii;
                     }
 
-                    KeyChainGroup wallet = new KeyChainGroup(NetworkParameters.prodNet());
+                    final KeyChainGroup wallet = new KeyChainGroup(NetworkParameters.prodNet());
 
                     //Sign our inputs
                     try {
-                        Lock lock = OurWallet.getInstance().updateLock.readLock();
+                        final Lock lock = OurWallet.getInstance().updateLock.readLock();
 
                         lock.lock();
                         try {
@@ -1091,13 +1091,13 @@ public class SharedCoin extends HttpServlet {
                                         throw new Exception("Input hash null outpoint " + input + " " + transaction);
                                     }
 
-                                    Script scriptPubKey = input.getConnectedOutput().getScriptPubKey();
+                                    final Script scriptPubKey = input.getConnectedOutput().getScriptPubKey();
 
                                     if (scriptPubKey == null) {
                                         throw new Exception("scriptPubKey is null");
                                     }
 
-                                    String address = input.getOutpoint().getConnectedOutput().getScriptPubKey().getToAddress(MainNetParams.get()).toString();
+                                    final String address = input.getOutpoint().getConnectedOutput().getScriptPubKey().getToAddress(MainNetParams.get()).toString();
 
                                     ECKey key = myWallet.getECKey(address);
                                     if (key == null) {
@@ -2732,6 +2732,48 @@ public class SharedCoin extends HttpServlet {
             return Collections.unmodifiableList(requestedOutputs);
         }
 
+        public boolean isSatisfiedBy(Transaction transaction) {
+
+            for (OutpointWithValue outpointWithValue : offeredOutpoints) {
+                boolean found = false;
+
+                for (TransactionInput transactionInput : transaction.getInputs()) {
+                    final TransactionOutput connectedOutput = transactionInput.getConnectedOutput();
+
+                    final int index = connectedOutput.getIndex();
+                    final Hash hash = new Hash(connectedOutput.getHash().getBytes());
+
+                    if (hash.equals(outpointWithValue.getHash())
+                            && outpointWithValue.getIndex() == index) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    return false;
+                }
+            }
+
+            for (Output output : requestedOutputs) {
+                boolean found = false;
+
+                for (TransactionOutput transactionOutput : transaction.getOutputs()) {
+                    if (Arrays.equals(output.getScript().getProgram(), transactionOutput.getScriptBytes())
+                            && output.getValue() == transactionOutput.getValue().longValue()) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         public boolean isTheSameAsOffer(Offer _offer) {
 
             if (offeredOutpoints.size() != _offer.offeredOutpoints.size())
@@ -2758,7 +2800,7 @@ public class SharedCoin extends HttpServlet {
             for (Output output : requestedOutputs) {
                 boolean found = false;
 
-                for (Output _output : requestedOutputs) {
+                for (Output _output : _offer.requestedOutputs) {
                     if (output.equals(_output)) {
                         found = true;
                         break;
@@ -3200,8 +3242,11 @@ public class SharedCoin extends HttpServlet {
                         }
 
                         long expectedFee = offer.calculateFeeExpected();
-                        if (version >= 2) {
+                        if (version == 2) {
                             expectedFee = Math.max(expectedFee, MinimumFee);
+                        } else if (version >= 3) {
+                            //Version 3 changed to a specific percentage + base network fee
+                            expectedFee = expectedFee + MinimumFee;
                         }
 
                         final long feePaid = totalInputValue - totalOutputValue;
@@ -3218,9 +3263,6 @@ public class SharedCoin extends HttpServlet {
                         //Everything looks good so far
                         //Check for any conflicting inputs
                         //Then add to pending
-
-                        JSONObject obj = new JSONObject();
-
                         synchronized (activeCompletePendingWriteLock) {
                             for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
                                 final Offer tmpExistingConflictingOffer = findOfferConsumingOutpoint(outpointWithValue.getHash(), outpointWithValue.getIndex());
@@ -3238,7 +3280,15 @@ public class SharedCoin extends HttpServlet {
                                 if (offer.isTheSameAsOffer(existingConflictingOffer)) {
                                     Logger.log(Logger.SeverityINFO, "Conflicting Offer Is Equal");
 
+                                    JSONObject obj = new JSONObject();
+
                                     obj.put("offer_id", existingConflictingOffer.getOfferID());
+
+                                    res.setContentType("application/json");
+
+                                    res.getWriter().print(obj.toJSONString());
+
+                                    return;
                                 } else {
                                     throw new Exception("Conflicting Offer");
                                 }
@@ -3247,12 +3297,31 @@ public class SharedCoin extends HttpServlet {
                                 for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
                                     CompletedTransaction completedTransaction = findCompletedTransactionOutputWasSpentIn(outpointWithValue.getHash(), outpointWithValue.getIndex());
                                     if (completedTransaction != null) {
-                                        Logger.log(Logger.SeverityWARN, "User tried to submit outpoint spent in completed transaction " + AdminServlet.getRealIP(req));
-                                        Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
-                                        Logger.log(Logger.SeverityWARN, "   This is the conflicting transaction " + completedTransaction);
-                                        Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + completedTransaction.completedTime);
 
-                                        throw new Exception("Outpoint (" + outpointWithValue + ") already Spent in Completed Transaction " + completedTransaction);
+                                        //Check if the completed transaction has the inputs and outputs we would expect
+                                        //If it does perhaps the client can resume
+                                        if (offer.isSatisfiedBy(completedTransaction.getTransaction())) {
+                                            JSONObject obj = new JSONObject();
+
+                                            obj.put("status", "complete");
+                                            obj.put("tx_hash", completedTransaction.getTransaction().getHash().toString());
+
+                                            byte[] serialized = completedTransaction.getTransaction().bitcoinSerialize();
+                                            obj.put("tx", new String(Hex.encode(serialized), "UTF-8"));
+
+                                            res.setContentType("application/json");
+
+                                            res.getWriter().print(obj.toJSONString());
+
+                                            return;
+                                        } else {
+                                            Logger.log(Logger.SeverityWARN, "User tried to submit outpoint spent in completed transaction " + AdminServlet.getRealIP(req));
+                                            Logger.log(Logger.SeverityWARN, "   This is their offer " + offer);
+                                            Logger.log(Logger.SeverityWARN, "   This is the conflicting transaction " + completedTransaction);
+                                            Logger.log(Logger.SeverityWARN, "   Current Timestamp : " + System.currentTimeMillis() + " Completed Transaction Timestamp " + completedTransaction.completedTime);
+
+                                            throw new Exception("Outpoint (" + outpointWithValue + ") already Spent in Completed Transaction " + completedTransaction);
+                                        }
                                     }
 
                                     if (isOutpointInUse(outpointWithValue.getHash(), outpointWithValue.getIndex())) {
@@ -3267,15 +3336,15 @@ public class SharedCoin extends HttpServlet {
 
                                 addOfferToPending(offer);
 
+                                JSONObject obj = new JSONObject();
+
                                 obj.put("offer_id", offer.getOfferID());
+
+                                res.setContentType("application/json");
+
+                                res.getWriter().print(obj.toJSONString());
                             }
                         }
-
-                        res.setContentType("application/json");
-
-                        Logger.log(Logger.SeverityINFO, "Responding to Submit Offer " + obj.toJSONString());
-
-                        res.getWriter().print(obj.toJSONString());
                     } else if (method.equals("get_offer_id")) {
                         Long offerID;
                         try {
