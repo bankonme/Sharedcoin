@@ -3244,7 +3244,7 @@ public class SharedCoin extends HttpServlet {
                         long expectedFee = offer.calculateFeeExpected();
                         if (version == 2) {
                             expectedFee = Math.max(expectedFee, MinimumFee);
-                        } else if (version >= 3) {
+                        } else if (version >= 5) {
                             //Version 3 changed to a specific percentage + base network fee
                             expectedFee = expectedFee + MinimumFee;
                         }
