@@ -29,7 +29,6 @@ public class OurWallet {
 
     private static final long ForceDivideLargeOutputSize = 50 * SharedCoin.COIN;
 
-
     private static final int TimerInterval = 10000; //10 seconds
     private static final int TidyWalletInterval = 60000; //1 minutes
     private static final int CleanOutConfirmedInterval = 120000; //2 minutes

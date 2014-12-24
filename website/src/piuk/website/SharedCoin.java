@@ -70,9 +70,6 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumOfferNumberOfOutputs = 10;
     private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
-    private static final long RecommendedIterationsMin = Settings.instance().getLong("recommended_min_iterations");
-    private static final long RecommendedIterationsMax = Settings.instance().getLong("recommended_max_iterations");
-
     private static final double MaxChangePercentageSingleUnconfirmedInput = 500;
     private static final double MaxChangePercentageSingleConfirmedInput = 300;
 
@@ -90,9 +87,6 @@ public class SharedCoin extends HttpServlet {
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
     private static final long ProposalExpiryTimeFailedToBroadcast = 1800000; //30 Minutes
 
-    private static final long RecommendedForceProposalAgeMax = Settings.instance().getLong("offer_force_proposal_age_max"); //When an offer reaches this age force a proposal creation
-    private static final long RecommendedForceProposalAgeMin = Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
-
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
     public static final int scriptSigSize = 138; //107 compressed
@@ -102,6 +96,22 @@ public class SharedCoin extends HttpServlet {
     public static final ExecutorService exec = Executors.newSingleThreadExecutor();
 
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
+
+    public static long getRecommendedIterationsMin() {
+        return Settings.instance().getLong("recommended_min_iterations");
+    }
+
+    public static long getRecommendedIterationsMax() {
+        return Settings.instance().getLong("recommended_max_iterations");
+    }
+
+    public static long getRecommendedForceProposalAgeMax() {
+        return Settings.instance().getLong("offer_force_proposal_age_max"); //When an offer reaches this age force a proposal creation
+    }
+
+    public static long getRecommendedForceProposalAgeMin() {
+        return Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
+    }
 
     public static Set<Hash> getRecentlyCompletedTransactionHashes() {
         return new HashSet<>(recentlyCompletedTransactions.keySet());
@@ -3051,7 +3061,7 @@ public class SharedCoin extends HttpServlet {
                                 throw new Exception("Invalid Numerical Value");
                             }
                         } else {
-                            offer.forceProposalMaxAge = Util.randomLong(RecommendedForceProposalAgeMin, RecommendedForceProposalAgeMax);
+                            offer.forceProposalMaxAge = Util.randomLong(getRecommendedForceProposalAgeMin(), getRecommendedForceProposalAgeMax());
                         }
 
                         final Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
@@ -3243,7 +3253,11 @@ public class SharedCoin extends HttpServlet {
                         final long feePaid = totalInputValue - totalOutputValue;
 
                         if (feePaid < (expectedFee - MinimumNoneStandardOutputValue)) {
-                            throw new Exception("Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
+                            Logger.log(Logger.SeveritySeriousError, AdminServlet.getRealIP(req) + " Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
+
+                            //Only make it fatal when less than minimum
+                            if (feePaid < MinimumFee)
+                                throw new Exception("Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
                         }
 
                         if (feePaid > (expectedFee + MinimumNoneStandardOutputValue)) {
@@ -3396,14 +3410,14 @@ public class SharedCoin extends HttpServlet {
                         obj.put("maximum_offer_number_of_inputs", MaximumOfferNumberOfInputs);
                         obj.put("maximum_offer_number_of_outputs", MaximumOfferNumberOfOutputs);
                         obj.put("min_supported_version", MinSupportedVersion);
-                        obj.put("recommended_min_iterations", RecommendedIterationsMin);
-                        obj.put("recommended_max_iterations", RecommendedIterationsMax);
-                        obj.put("recommended_min_wait_time", RecommendedForceProposalAgeMin);
-                        obj.put("recommended_max_wait_time", RecommendedForceProposalAgeMax);
+                        obj.put("recommended_min_iterations", getRecommendedIterationsMin());
+                        obj.put("recommended_max_iterations", getRecommendedIterationsMax());
+                        obj.put("recommended_min_wait_time", getRecommendedForceProposalAgeMin());
+                        obj.put("recommended_max_wait_time", getRecommendedForceProposalAgeMax());
 
                         //Iterations determined by client after version 5
                         if (version < 5) {
-                            obj.put("recommended_iterations", Util.randomLong(RecommendedIterationsMin, RecommendedIterationsMax));
+                            obj.put("recommended_iterations", Util.randomLong(getRecommendedIterationsMin(), getRecommendedIterationsMax()));
                         }
 
                         obj.put("minimum_fee", MinimumFee);
