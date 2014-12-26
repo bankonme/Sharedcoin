@@ -72,7 +72,7 @@ public class SharedCoin extends HttpServlet {
     private static final double MaxChangePercentageSingleUnconfirmedInput = 500;
     private static final double MaxChangePercentageSingleConfirmedInput = 300;
 
-    public static final long ProtocolVersion = 5;
+    public static final long ProtocolVersion = 6;
     private static final long MinSupportedVersion = 2;
 
     private static final long MinNumberOfOutputs = 2; //The number of outputs to aim for in a single transaction including change outputs
@@ -94,6 +94,10 @@ public class SharedCoin extends HttpServlet {
     public static final ExecutorService exec = Executors.newSingleThreadExecutor();
 
     private static final ExecutorService multiThreadExec = Executors.newCachedThreadPool();
+
+    @Deprecated
+    private static final long VarianceWhenMimicingOutputValueDepreciated = 25; //25%
+
 
     public static long getRecommendedIterationsMin() {
         return Settings.instance().getLong("recommended_min_iterations");
@@ -983,9 +987,6 @@ public class SharedCoin extends HttpServlet {
             return true;
         }
 
-        ;
-
-
         public boolean pushTransaction() throws Exception {
             if (isPushing.compareAndSet(false, true)) {
                 try {
@@ -1445,6 +1446,150 @@ public class SharedCoin extends HttpServlet {
             return true;
         }
 
+        @Deprecated
+        private boolean addOutputsWhichMimicsOfferDepreciated(List<MyTransactionOutPoint> unspent, final Offer offer) throws Exception {
+
+            long offerTotalValueOutput = offer.getValueOutputRequested();
+
+            long ourValueUnspent = 0;
+            for (MyTransactionOutPoint outpoint : unspent) {
+                ourValueUnspent += outpoint.getValue().longValue();
+            }
+
+            //Not sufficient funds to mimic this
+            if (ourValueUnspent < offerTotalValueOutput) {
+                Logger.log(Logger.SeverityWARN, "Add output to mimic ourValueUnspent < offerTotalValueOutput");
+                return false;
+            }
+
+            long feePayingOutputValue = 0;
+            long noneFeePayingOutputValue = 0;
+            int nSplits = 0;
+
+            for (Output out : offer.getRequestedOutputs()) {
+                if (!out.isExcludeFromFee()) {
+                    ++nSplits;
+                    feePayingOutputValue += out.value;
+                } else {
+                    noneFeePayingOutputValue += out.value;
+                }
+            }
+
+            final List<Long> splits = new ArrayList<>();
+
+            long average = feePayingOutputValue / nSplits;
+
+            long maxVariance = (long) ((average / 100d) * (double) VarianceWhenMimicingOutputValueDepreciated);
+
+            if (nSplits == 1) {
+                long variance = (long) ((average / 100d) * (VarianceWhenMimicingOutputValueDepreciated * Math.random()));
+
+                long remainderRounded = BigDecimal.valueOf(feePayingOutputValue + variance).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(noneFeePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
+
+                remainderRounded = Math.max(MinimumOutputValue, remainderRounded);
+
+                splits.add(remainderRounded);
+            } else {
+                while (true) {
+                    final long[] vSplits = genNumbers(feePayingOutputValue, nSplits);
+
+                    boolean allWithinVariance = true;
+                    for (long split : vSplits) {
+                        long difference = average - split;
+
+                        if (difference < 0) {
+                            difference = -difference;
+                        }
+
+                        if (difference > maxVariance) {
+                            allWithinVariance = false;
+                        }
+                    }
+
+                    if (!allWithinVariance) {
+                        continue;
+                    } else {
+                        for (long split : vSplits) {
+                            long rounded = BigDecimal.valueOf(split).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(feePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
+
+                            rounded = Math.max(MinimumOutputValue, rounded);
+
+                            splits.add(rounded);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (noneFeePayingOutputValue > 0) {
+                final long remainder = offerTotalValueOutput - splits.get(0);
+
+                long remainderRounded = BigDecimal.valueOf(remainder).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(noneFeePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
+
+                remainderRounded = Math.max(MinimumOutputChangeSplitValue, remainderRounded);
+
+                splits.add(remainderRounded);
+            }
+
+            final Offer newOffer = new Offer();
+
+            long totalValueNeeded = 0;
+
+            newOffer.feePercent = 0;
+
+            for (Long splitValue : splits) {
+                final Output outOne = new Output();
+
+                outOne.excludeFromFee = false;
+                outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
+                outOne.value = splitValue;
+
+                newOffer.addRequestedOutput(outOne);
+
+                totalValueNeeded += splitValue;
+            }
+
+            if (!addInputsForValue(unspent, newOffer, totalValueNeeded)) {
+                Logger.log(Logger.SeverityWARN, "Error Adding inputs for offer");
+                return false;
+            }
+
+            {
+                //Here we consume any excess change
+                long totalValueInput = 0;
+                for (OutpointWithValue outpoint : newOffer.getOfferedOutpoints()) {
+                    totalValueInput += outpoint.getValue();
+                }
+
+                long remainder = totalValueInput - totalValueNeeded;
+                int ii = 0;
+                while (remainder > totalValueNeeded && ii < 4) {
+                    for (Long splitValue : splits) {
+                        final Output outOne = new Output();
+
+                        outOne.excludeFromFee = false;
+                        outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
+                        outOne.value = splitValue;
+
+                        newOffer.addRequestedOutput(outOne);
+                    }
+
+                    remainder -= totalValueNeeded;
+
+                    ++ii;
+                }
+            }
+
+            Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
+
+            if (!addOurOffer(newOffer)) {
+                Logger.log(Logger.SeverityWARN, "Error Adding Our Offer");
+                return false;
+            }
+
+            return true;
+        }
+
         private boolean addOutputsWhichMimicsOffer(List<MyTransactionOutPoint> unspent, final Offer offer) throws Exception {
 
             long offerTotalValueOutput = offer.getValueOutputRequested();
@@ -1646,8 +1791,14 @@ public class SharedCoin extends HttpServlet {
                     final List<MyTransactionOutPoint> unspent = new ArrayList<>(allUnspent);
 
                     try {
-                        if (addOutputsWhichMimicsOffer(unspent, offer)) {
-                            allFailed = false;
+                        if (offer.getVersion() >= 6) {
+                            if (addOutputsWhichMimicsOffer(unspent, offer)) {
+                                allFailed = false;
+                            }
+                        } else {
+                            if (addOutputsWhichMimicsOfferDepreciated(unspent, offer)) {
+                                allFailed = false;
+                            }
                         }
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -2570,10 +2721,15 @@ public class SharedCoin extends HttpServlet {
         private transient Token token;
         private transient long forceProposalMaxAge;
         private transient String hashedUserIP;
+        private transient int version;
 
         public Offer() {
             offerID = randomID();
             receivedTime = System.currentTimeMillis();
+        }
+
+        public int getVersion() {
+            return version;
         }
 
         public Token getToken() {
@@ -2921,6 +3077,8 @@ public class SharedCoin extends HttpServlet {
 
                         Offer offer = new Offer();
 
+                        offer.version = version;
+
                         Logger.log(Logger.SeverityINFO, "Submit Offer Received From " + userIP);
 
                         offer.hashedUserIP = Util.SHA256Hex(userIP);
@@ -3196,7 +3354,7 @@ public class SharedCoin extends HttpServlet {
                             throw new Exception("Input Value Less Than Output Value");
                         }
 
-                        if (offer.getFeePayingValueOutputRequested() > getMaxTotalFeePayingOutputValue()) {
+                        if (version >= 6 && offer.getFeePayingValueOutputRequested() > getMaxTotalFeePayingOutputValue()) {
                             throw new Exception("The Maximum None Change Total Output value is " + getMaxTotalFeePayingOutputValue());
                         }
 

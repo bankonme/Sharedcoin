@@ -20,7 +20,9 @@
 		},
 		"recommended_min_iterations" : 4,
 		"recommended_max_iterations" : 8,
-		"offer_force_proposal_age_min" : 60000,
-		"offer_force_proposal_age_max" : 120000
+		"offer_force_proposal_age_min" : 30000,
+		"offer_force_proposal_age_max" : 120000,
+		"max_output_splits" : 5,
+		"min_output_splits" : 2
  	}
 }
