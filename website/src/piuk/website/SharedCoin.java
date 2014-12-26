@@ -68,16 +68,14 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumInputValue = COIN * 1000; //1000 BTC
     private static final long MaximumOfferNumberOfInputs = 10;
     private static final long MaximumOfferNumberOfOutputs = 10;
-    private static final long VarianceWhenMimicingOutputValue = 25; //25%
 
     private static final double MaxChangePercentageSingleUnconfirmedInput = 500;
     private static final double MaxChangePercentageSingleConfirmedInput = 300;
 
-    public static final long ProtocolVersion = 3;
+    public static final long ProtocolVersion = 5;
     private static final long MinSupportedVersion = 2;
 
     private static final long MinNumberOfOutputs = 2; //The number of outputs to aim for in a single transaction including change outputs
-    private static final long MaxNumberOfOutputsIncludingChange = 40; //The number of outputs to aim for in a single transaction including change outputs
     private static final long MaxNumberOfInputs = 100; //The soft max number of inputs to use for in a single transaction
 
     private static final long ProposalExpiryTimeUnsigned = 120000; //2 Minutes
@@ -111,6 +109,18 @@ public class SharedCoin extends HttpServlet {
 
     public static long getRecommendedForceProposalAgeMin() {
         return Settings.instance().getLong("offer_force_proposal_age_min"); //When an offer reaches this age force a proposal creation
+    }
+
+    public static int getMaxOutputSplits() {
+        return Settings.instance().getInt("max_output_splits"); //When an offer reaches this age force a proposal creation
+    }
+
+    public static int getMinOutputSplits() {
+        return Settings.instance().getInt("min_output_splits"); //When an offer reaches this age force a proposal creation
+    }
+
+    public long getMaxTotalFeePayingOutputValue() {
+        return (getMaxOutputSplits()-1) * MaximumOutputValue;
     }
 
     public static Set<Hash> getRecentlyCompletedTransactionHashes() {
@@ -1451,120 +1461,112 @@ public class SharedCoin extends HttpServlet {
             }
 
             long feePayingOutputValue = 0;
-            long noneFeePayingOutputValue = 0;
-            int nSplits = 0;
-
             for (Output out : offer.getRequestedOutputs()) {
                 if (!out.isExcludeFromFee()) {
-                    ++nSplits;
                     feePayingOutputValue += out.value;
-                } else {
-                    noneFeePayingOutputValue += out.value;
                 }
             }
 
-            final List<Long> splits = new ArrayList<>();
+            //Maximum and minimum number of outputs to aim for
+            int maxSplits = getMaxOutputSplits();
+            int minSplits = getMinOutputSplits();
 
-            long average = feePayingOutputValue / nSplits;
+            //Only make split mandatory if the value is high enough
+            if (feePayingOutputValue < MinimumOutputValue * (getMinOutputSplits() + 1)) {
+                minSplits = 1;
+            }
 
-            long maxVariance = (long) ((average / 100d) * (double) VarianceWhenMimicingOutputValue);
+            //Generate random output values
+            List<BigInteger> finalSplits;
 
-            if (nSplits == 1) {
-                long variance = (long) ((average / 100d) * (VarianceWhenMimicingOutputValue * Math.random()));
+            //Is it impossible to ever get stuck in a endless loop here?
+            while (true) {
+                //Only add random variance if the user has paid a fee and therefore also has variance
+                long randomVariance = 0;
+                if (offer.getFeePercent() > 0) {
+                    double varianceRand = (Math.random() - 1.0) * 2; //-2 to 2
 
-                long remainderRounded = BigDecimal.valueOf(feePayingOutputValue + variance).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(noneFeePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
+                    randomVariance = (long) ((feePayingOutputValue / 100d) * (offer.getFeePercent() * varianceRand));
+                }
 
-                remainderRounded = Math.max(MinimumOutputValue, remainderRounded);
+                int nSplits = (int) (Math.random() * (maxSplits - minSplits)) + minSplits;
 
-                splits.add(remainderRounded);
-            } else {
-                while (true) {
-                    final long[] vSplits = genNumbers(feePayingOutputValue, nSplits);
+                final BigInteger[] proposedSplits = Util.splitBigInt(BigInteger.valueOf(feePayingOutputValue + randomVariance), nSplits);
 
-                    boolean allWithinVariance = true;
-                    for (long split : vSplits) {
-                        long difference = average - split;
+                //Round at least one output commonly
+                double rand = Math.random();
+                if (rand > 0.25) {
+                    BigInteger[] rounded = Util.randomRound(proposedSplits[0], proposedSplits[1]);
 
-                        if (difference < 0) {
-                            difference = -difference;
-                        }
+                    proposedSplits[0] = rounded[0];
+                    proposedSplits[1] = rounded[1];
+                }
 
-                        if (difference > maxVariance) {
-                            allWithinVariance = false;
-                        }
-                    }
+                //Round a second output more rarely
+                if (rand > 0.75 && proposedSplits.length > 2) {
+                    BigInteger[] rounded = Util.randomRound(proposedSplits[1], proposedSplits[2]);
 
-                    if (!allWithinVariance) {
-                        continue;
-                    } else {
-                        for (long split : vSplits) {
-                            long rounded = BigDecimal.valueOf(split).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(feePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
+                    proposedSplits[1] = rounded[0];
+                    proposedSplits[2] = rounded[1];
+                }
 
-                            rounded = Math.max(MinimumOutputValue, rounded);
-
-                            splits.add(rounded);
-                        }
+                //Check the proposed splits are within the max and min output value range
+                boolean allWithinRange = true;
+                for (BigInteger proposedSplit : proposedSplits) {
+                    if (proposedSplit.compareTo(BigInteger.valueOf(MinimumInputValue)) < 0 ||
+                            proposedSplit.compareTo(BigInteger.valueOf(MaximumOutputValue)) > 0) {
+                        allWithinRange = false;
                         break;
                     }
                 }
-            }
 
-            if (noneFeePayingOutputValue > 0) {
-                final long remainder = offerTotalValueOutput - splits.get(0);
-
-                long remainderRounded = BigDecimal.valueOf(remainder).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(noneFeePayingOutputValue), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).longValue();
-
-                remainderRounded = Math.max(MinimumOutputChangeSplitValue, remainderRounded);
-
-                splits.add(remainderRounded);
+                if (allWithinRange) {
+                    finalSplits = Arrays.asList(proposedSplits);
+                    break;
+                }
             }
 
             final Offer newOffer = new Offer();
 
-            long totalValueNeeded = 0;
+            BigInteger totalSplitValue = BigInteger.ZERO;
 
             newOffer.feePercent = 0;
 
-            for (Long splitValue : splits) {
+            for (BigInteger splitValue : finalSplits) {
                 final Output outOne = new Output();
 
                 outOne.excludeFromFee = false;
                 outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
-                outOne.value = splitValue;
+                outOne.value = splitValue.longValue();
 
                 newOffer.addRequestedOutput(outOne);
 
-                totalValueNeeded += splitValue;
+                totalSplitValue = totalSplitValue.add(splitValue);
             }
 
-            if (!addInputsForValue(unspent, newOffer, totalValueNeeded)) {
+            if (!addInputsForValue(unspent, newOffer, totalSplitValue.longValue())) {
                 Logger.log(Logger.SeverityWARN, "Error Adding inputs for offer");
                 return false;
             }
 
             {
                 //Here we consume any excess change
-                long totalValueInput = 0;
+                //So total the
+                BigInteger totalValueInput = BigInteger.ZERO;
                 for (OutpointWithValue outpoint : newOffer.getOfferedOutpoints()) {
-                    totalValueInput += outpoint.getValue();
+                    totalValueInput = totalValueInput.add(BigInteger.valueOf(outpoint.getValue()));
                 }
 
-                long remainder = totalValueInput - totalValueNeeded;
-                int ii = 0;
-                while (remainder > totalValueNeeded && ii < 4) {
-                    for (Long splitValue : splits) {
-                        final Output outOne = new Output();
+                //Figure out the remainder and add the change output
+                final BigInteger remainder = totalValueInput.subtract(totalSplitValue);
+                while (remainder.compareTo(BigInteger.valueOf(MinimumOutputValueExcludeFee)) > 0) {
+                    final Output outOne = new Output();
 
-                        outOne.excludeFromFee = false;
-                        outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
-                        outOne.value = splitValue;
+                    outOne.excludeFromFee = false;
+                    outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
+                    outOne.value = remainder.longValue();
 
-                        newOffer.addRequestedOutput(outOne);
-                    }
-
-                    remainder -= totalValueNeeded;
-
-                    ++ii;
+                    newOffer.addRequestedOutput(outOne);
                 }
             }
 
@@ -1960,63 +1962,8 @@ public class SharedCoin extends HttpServlet {
                     }
                 }
 
-                //Try cloning some offer outputs with variance
-                while (change.longValue() >= MinimumOutputValue) {
-                    boolean allFailed = true;
-
-                    for (Offer offer : offers) {
-                        if (transaction.getOutputs().size() > MaxNumberOfOutputsIncludingChange || transaction.getInputs().size() > MaxNumberOfInputs) {
-                            break;
-                        }
-
-                        if (nKB >= MaximumSoftTransactionSize) {
-                            break;
-                        }
-
-                        boolean _break = false;
-                        for (Output output : offer.requestedOutputs) {
-                            if (!output.isExcludeFromFee() && output.value <= change.longValue() - MinimumNoneStandardOutputValue) {
-                                double rand = (Math.random() - 0.5) * 2; //-1 to 1
-
-                                long randomVariance = (long) ((output.getValue() / 100d) * (VarianceWhenMimicingOutputValue * rand));
-
-                                BigInteger rounded = BigDecimal.valueOf(output.value + randomVariance).divide(BigDecimal.valueOf(COIN)).setScale(scaleForInputValue(output.getValue()), BigDecimal.ROUND_HALF_UP).multiply(BigDecimal.valueOf(COIN)).toBigInteger();
-
-                                if (rounded.compareTo(change.subtract(BigInteger.valueOf(MinimumOutputValue))) <= 0 && rounded.compareTo(BigInteger.valueOf(MinimumNoneStandardOutputValue)) > 0) {
-
-                                    synchronized (transaction) {
-                                        transaction.addOutput(Coin.valueOf(rounded.longValue()), getRandomAddressNotInUse(allUnspent));
-                                    }
-                                    change = change.subtract(rounded);
-
-                                    //Check fee
-                                    nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
-                                    extraFeeNeeded = BigInteger.valueOf(nKB).multiply(TransactionFeePer1000Bytes).subtract(feedPaid);
-
-                                    if (extraFeeNeeded.compareTo(BigInteger.ZERO) > 0) {
-                                        change = change.subtract(extraFeeNeeded);
-                                        feedPaid = feedPaid.add(extraFeeNeeded);
-                                    }
-
-                                    allFailed = false;
-
-                                    _break = true;
-
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (_break) {
-                            break;
-                        }
-                    }
-
-                    if (allFailed) {
-                        break;
-                    }
-                }
-
+                //TODO input value matching
+                //Knapsack problem
 
                 //Check fee
                 nKB = (int) Math.ceil((transaction.bitcoinSerialize().length + (transaction.getInputs().size() * scriptSigSize)) / 1000d);
@@ -2661,6 +2608,15 @@ public class SharedCoin extends HttpServlet {
             return totalOutputRequested;
         }
 
+        public long getFeePayingValueOutputRequested() {
+            long totalOutputRequested = 0;
+            for (Output output : getRequestedOutputs()) {
+                if (!output.isExcludeFromFee())
+                    totalOutputRequested += output.value;
+            }
+            return totalOutputRequested;
+        }
+
         public long calculateFeeExpected() throws Exception {
             if (getFeePercent() == 0) {
                 return 0;
@@ -2853,7 +2809,6 @@ public class SharedCoin extends HttpServlet {
         }
 
         final List<Offer> offers = new ArrayList<>(pendingOffers.values());
-
 
         req.setAttribute("pending_offers", offers);
 
@@ -3066,7 +3021,6 @@ public class SharedCoin extends HttpServlet {
 
                         final Map<Hash, MyTransaction> _transactionCache = new HashMap<>();
 
-
                         final Set<String> transactionOutPointsUsed = new HashSet<>();
 
                         for (Object _input : inputs) {
@@ -3242,6 +3196,10 @@ public class SharedCoin extends HttpServlet {
                             throw new Exception("Input Value Less Than Output Value");
                         }
 
+                        if (offer.getFeePayingValueOutputRequested() > getMaxTotalFeePayingOutputValue()) {
+                            throw new Exception("The Maximum None Change Total Output value is " + getMaxTotalFeePayingOutputValue());
+                        }
+
                         long expectedFee = offer.calculateFeeExpected();
                         if (version >= 5) {
                             //Version 3 changed to a specific percentage + base network fee
@@ -3414,6 +3372,9 @@ public class SharedCoin extends HttpServlet {
                         obj.put("recommended_max_iterations", getRecommendedIterationsMax());
                         obj.put("recommended_min_wait_time", getRecommendedForceProposalAgeMin());
                         obj.put("recommended_max_wait_time", getRecommendedForceProposalAgeMax());
+                        obj.put("min_splits", getMinOutputSplits());
+                        obj.put("max_splits", getMaxOutputSplits());
+                        obj.put("max_total_fee_paying_output_value", getMaxTotalFeePayingOutputValue());
 
                         //Iterations determined by client after version 5
                         if (version < 5) {

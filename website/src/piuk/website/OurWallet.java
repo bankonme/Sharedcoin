@@ -398,20 +398,13 @@ public class OurWallet {
 
             BigInteger unRoundedSplit = BigInteger.valueOf((long) ((value.longValue() / 2) * (Math.random() + 0.5)));
 
-            //Round the split based on number of significant digits
-            long digitCount = Util.getDigitCount(unRoundedSplit);
-
             BigInteger finalSplit = unRoundedSplit;
             for (int ii = 0; ii < 2; ++ii) {
-                BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+                BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, value.subtract(unRoundedSplit));
 
-                BigInteger rounded = unRoundedSplit.divide(modifier).multiply(modifier);
-
-                BigInteger roundedSplitRemainder = value.subtract(rounded);
-
-                if (rounded.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
-                        roundedSplitRemainder.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
-                    finalSplit = rounded;
+                if (roundedAndRemainder[0].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
+                        roundedAndRemainder[1].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
+                    finalSplit = roundedAndRemainder[0];
                     break;
                 }
             }
@@ -501,25 +494,16 @@ public class OurWallet {
             if (divideAddress != null) {
                 BigInteger unRoundedSplit = BigInteger.valueOf((long) ((divideBalance.longValue() / 2) * (Math.random() + 0.5)));
 
-                //Round the split based on number of significant digits
-                long digitCount = Util.getDigitCount(unRoundedSplit);
-
                 BigInteger finalSplit = unRoundedSplit;
                 for (int ii = 0; ii < 2; ++ii) {
-                    BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+                    BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, divideBalance.subtract(unRoundedSplit));
 
-                    BigInteger rounded = unRoundedSplit.divide(modifier).multiply(modifier);
-
-                    BigInteger roundedSplitRemainder = divideBalance.subtract(rounded);
-
-                    if (rounded.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
-                            roundedSplitRemainder.compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
-                        finalSplit = rounded;
+                    if (roundedAndRemainder[0].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
+                            roundedAndRemainder[1].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
+                        finalSplit = roundedAndRemainder[0];
                         break;
                     }
                 }
-
-                Logger.log(Logger.SeverityINFO, "divideOutputs() divideBalance "  + divideBalance + " rounded split " + finalSplit + " un-rounded " + unRoundedSplit + " digitCount " + digitCount);
 
                 final String destinationAddress;
                 if (unusedAddresses.size() > 0) {

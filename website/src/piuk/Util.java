@@ -2,6 +2,7 @@ package piuk;
 
 import org.apache.commons.io.IOUtils;
 import org.spongycastle.util.encoders.Hex;
+import piuk.website.SharedCoin;
 
 import java.io.DataOutputStream;
 import java.math.BigInteger;
@@ -34,9 +35,47 @@ public final class Util {
         return postURL(hostString, url.getQuery(), null);
     }
 
+    //Round one biginteger and add the remainder to the second
+    public static BigInteger[] randomRound(BigInteger val1, BigInteger val2) {
+        final BigInteger total = val1.add(val2);
+
+        long digitCount = Util.getDigitCount(val1);
+
+        BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+
+        BigInteger val1Rounded = val1.divide(modifier).multiply(modifier);
+
+        BigInteger roundedRemainder = total.subtract(val1Rounded);
+
+        return new BigInteger[]{val1Rounded, roundedRemainder};
+    }
+
+    //Divide a big integer into n random parts
+    public static BigInteger[] splitBigInt(BigInteger value, int n) {
+        BigInteger[] values = new BigInteger[n];
+        BigInteger total = BigInteger.ZERO;
+        for (int i = 0; i < n; ++i) {
+            values[i] = value.multiply(BigInteger.valueOf(Math.round(Math.random()*100)));
+            total = total.add(values[i]);
+        }
+
+        BigInteger mod = total.divide(value);
+        total = BigInteger.ZERO;
+        for (int i = 0; i < n; ++i) {
+            values[i] = values[i].divide(mod);
+            total = total.add(values[i]);
+        }
+
+        int randIndex = (int)Math.ceil(Math.random()*values.length)-1;
+
+        //Add any remainder to a random index
+        values[randIndex] = values[randIndex].add(value.subtract(total));
+
+        return values;
+    }
+
     public static long randomLong(long x, long y) {
-        Random r = new Random();
-        return x + ((long) (r.nextDouble() * (y - x)));
+        return x + ((long) (Math.random() * (y - x)));
     }
 
     public static double randomDouble(double rangeMin, double rangeMax) {
@@ -88,8 +127,7 @@ public final class Util {
         return sortedEntries;
     }
 
-    public static String uppercaseFirstLetters(String str)
-    {
+    public static String uppercaseFirstLetters(String str) {
         boolean prevWasWhiteSp = true;
         char[] chars = str.toCharArray();
         for (int i = 0; i < chars.length; i++) {
@@ -146,6 +184,7 @@ public final class Util {
 
         return IOUtils.toString(connection.getInputStream(), "UTF-8");
     }
+
     public static String getURL(String urlString) throws Exception {
         return getURL(urlString, 10000);
     }

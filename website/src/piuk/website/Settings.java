@@ -155,8 +155,6 @@ public class Settings {
     }
 
     private void setGlobalSettings(String encrypted_settings) throws Exception {
-        System.out.println(getEncryptionPassword());
-
         String decrypted_settings = MyWallet.decrypt(encrypted_settings, getEncryptionPassword(), MyWallet.DefaultPBKDF2Iterations);
 
         JSONObject globalObj = (JSONObject) new JSONParser().parse(decrypted_settings);
