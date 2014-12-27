@@ -400,7 +400,7 @@ public class OurWallet {
 
             BigInteger finalSplit = unRoundedSplit;
             for (int ii = 0; ii < 2; ++ii) {
-                BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, value.subtract(unRoundedSplit));
+                BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, value.subtract(unRoundedSplit), SharedCoin.getRandomRoundMinSignificant());
 
                 if (roundedAndRemainder[0].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
                         roundedAndRemainder[1].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {
@@ -496,7 +496,7 @@ public class OurWallet {
 
                 BigInteger finalSplit = unRoundedSplit;
                 for (int ii = 0; ii < 2; ++ii) {
-                    BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, divideBalance.subtract(unRoundedSplit));
+                    BigInteger[] roundedAndRemainder = Util.randomRound(unRoundedSplit, divideBalance.subtract(unRoundedSplit), SharedCoin.getRandomRoundMinSignificant());
 
                     if (roundedAndRemainder[0].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0 &&
                             roundedAndRemainder[1].compareTo(BigInteger.valueOf(SharedCoin.MinimumOutputChangeSplitValue)) >= 0) {

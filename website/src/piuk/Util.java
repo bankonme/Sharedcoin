@@ -36,12 +36,14 @@ public final class Util {
     }
 
     //Round one biginteger and add the remainder to the second
-    public static BigInteger[] randomRound(BigInteger val1, BigInteger val2) {
+    public static BigInteger[] randomRound(BigInteger val1, BigInteger val2, long minSignificant) {
         final BigInteger total = val1.add(val2);
 
         long digitCount = Util.getDigitCount(val1);
 
-        BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(1, digitCount - 1)));
+        minSignificant = Math.min(digitCount-1, minSignificant);
+
+        BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(minSignificant, digitCount - 1)));
 
         BigInteger val1Rounded = val1.divide(modifier).multiply(modifier);
 

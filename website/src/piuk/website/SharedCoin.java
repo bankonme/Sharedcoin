@@ -101,6 +101,9 @@ public class SharedCoin extends HttpServlet {
     @Deprecated
     private static final long VarianceWhenMimicingOutputValueDepreciated = 25; //25%
 
+    public static long getRandomRoundMinSignificant() {
+        return Settings.instance().getLong("random_round_min_significant");
+    }
 
     public static long getRecommendedIterationsMin() {
         return Settings.instance().getLong("recommended_min_iterations");
@@ -678,7 +681,7 @@ public class SharedCoin extends HttpServlet {
     }
 
 
-    public synchronized static void runCreateProposals() throws Exception {
+    public static void runCreateProposals() throws Exception {
         Proposal proposal = new Proposal();
 
         {
@@ -1638,7 +1641,7 @@ public class SharedCoin extends HttpServlet {
                 //Round at least one output commonly
                 double rand = Math.random();
                 if (rand > 0.25) {
-                    BigInteger[] rounded = Util.randomRound(proposedSplits[0], proposedSplits[1]);
+                    BigInteger[] rounded = Util.randomRound(proposedSplits[0], proposedSplits[1], getRandomRoundMinSignificant());
 
                     proposedSplits[0] = rounded[0];
                     proposedSplits[1] = rounded[1];
@@ -1646,7 +1649,7 @@ public class SharedCoin extends HttpServlet {
 
                 //Round a second output more rarely
                 if (rand > 0.75 && proposedSplits.length > 2) {
-                    BigInteger[] rounded = Util.randomRound(proposedSplits[1], proposedSplits[2]);
+                    BigInteger[] rounded = Util.randomRound(proposedSplits[1], proposedSplits[2], getRandomRoundMinSignificant());
 
                     proposedSplits[1] = rounded[0];
                     proposedSplits[2] = rounded[1];
@@ -1712,7 +1715,7 @@ public class SharedCoin extends HttpServlet {
 
                 //Figure out the remainder and add the change output
                 final BigInteger remainder = totalValueInput.subtract(totalSplitValue).subtract(BigInteger.valueOf(fee));
-                while (remainder.compareTo(BigInteger.valueOf(MinimumOutputValueExcludeFee)) > 0) {
+                if (remainder.compareTo(BigInteger.valueOf(MinimumOutputValueExcludeFee)) > 0) {
                     final Output outOne = new Output();
 
                     outOne.excludeFromFee = false;
@@ -1759,7 +1762,7 @@ public class SharedCoin extends HttpServlet {
             return count;
         }
 
-        public synchronized void mixWithOurWallet(List<MyTransactionOutPoint> allUnspentPreFilter) throws Exception {
+        public void mixWithOurWallet(List<MyTransactionOutPoint> allUnspentPreFilter) throws Exception {
 
             final List<MyTransactionOutPoint> allUnspent = new ArrayList<>();
 
@@ -3541,6 +3544,7 @@ public class SharedCoin extends HttpServlet {
                         obj.put("min_output_splits", getMinOutputSplits());
                         obj.put("max_output_splits", getMaxOutputSplits());
                         obj.put("max_total_fee_paying_output_value", getMaxTotalFeePayingOutputValue());
+                        obj.put("random_round_min_significant", getRandomRoundMinSignificant());
 
                         //Iterations determined by client after version 5
                         if (version < 5) {

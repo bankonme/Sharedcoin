@@ -23,6 +23,7 @@
 		"offer_force_proposal_age_min" : 30000,
 		"offer_force_proposal_age_max" : 120000,
 		"max_output_splits" : 5,
-		"min_output_splits" : 2
+		"min_output_splits" : 2,
+		"random_round_min_significant" : 3
  	}
 }
