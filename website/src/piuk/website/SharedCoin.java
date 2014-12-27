@@ -85,6 +85,9 @@ public class SharedCoin extends HttpServlet {
     private static final long ProposalExpiryTimeAfterCompletion = 86400000; //24 Hours
     private static final long ProposalExpiryTimeFailedToBroadcast = 1800000; //30 Minutes
 
+    private static final double DonationPercentMin = 0.5; //Must be changed in wallet UI manually
+    private static final double DonationPercentMax = 1.0; //Must be changed in wallet UI manually
+
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
     public static final int scriptSigSize = 138; //107 compressed
@@ -1624,19 +1627,13 @@ public class SharedCoin extends HttpServlet {
             //Generate random output values
             List<BigInteger> finalSplits;
 
+
             //Is it impossible to ever get stuck in a endless loop here?
             while (true) {
-                //Only add random variance if the user has paid a fee and therefore also has variance
-                long randomVariance = 0;
-                if (offer.getFeePercent() > 0) {
-                    double varianceRand = (Math.random() - 1.0) * 2; //-2 to 2
-
-                    randomVariance = (long) ((feePayingOutputValue / 100d) * (offer.getFeePercent() * varianceRand));
-                }
 
                 int nSplits = (int) (Math.random() * (maxSplits - minSplits)) + minSplits;
 
-                final BigInteger[] proposedSplits = Util.splitBigInt(BigInteger.valueOf(feePayingOutputValue + randomVariance), nSplits);
+                final BigInteger[] proposedSplits = Util.splitBigInt(BigInteger.valueOf(feePayingOutputValue), nSplits);
 
                 //Round at least one output commonly
                 double rand = Math.random();
@@ -1689,7 +1686,18 @@ public class SharedCoin extends HttpServlet {
                 totalSplitValue = totalSplitValue.add(splitValue);
             }
 
-            if (!addInputsForValue(unspent, newOffer, totalSplitValue.longValue())) {
+            //I the user has paid a percentage fee we need to mimic that we paid a similar amount
+            long fee = 0;
+            if (offer.getFeePercent() > 0) {
+                double donationPercent = (Math.random() * (DonationPercentMax-DonationPercentMin)) + DonationPercentMin;
+
+                fee = (long) ((feePayingOutputValue / 100d) * donationPercent);
+            }
+
+            //All offers include a network fee
+            fee += MinimumFee;
+
+            if (!addInputsForValue(unspent, newOffer, totalSplitValue.longValue()+fee)) {
                 Logger.log(Logger.SeverityWARN, "Error Adding inputs for offer");
                 return false;
             }
@@ -1703,7 +1711,7 @@ public class SharedCoin extends HttpServlet {
                 }
 
                 //Figure out the remainder and add the change output
-                final BigInteger remainder = totalValueInput.subtract(totalSplitValue);
+                final BigInteger remainder = totalValueInput.subtract(totalSplitValue).subtract(BigInteger.valueOf(fee));
                 while (remainder.compareTo(BigInteger.valueOf(MinimumOutputValueExcludeFee)) > 0) {
                     final Output outOne = new Output();
 
@@ -3530,8 +3538,8 @@ public class SharedCoin extends HttpServlet {
                         obj.put("recommended_max_iterations", getRecommendedIterationsMax());
                         obj.put("recommended_min_wait_time", getRecommendedForceProposalAgeMin());
                         obj.put("recommended_max_wait_time", getRecommendedForceProposalAgeMax());
-                        obj.put("min_splits", getMinOutputSplits());
-                        obj.put("max_splits", getMaxOutputSplits());
+                        obj.put("min_output_splits", getMinOutputSplits());
+                        obj.put("max_output_splits", getMaxOutputSplits());
                         obj.put("max_total_fee_paying_output_value", getMaxTotalFeePayingOutputValue());
 
                         //Iterations determined by client after version 5
