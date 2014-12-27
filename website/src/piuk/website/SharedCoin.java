@@ -57,7 +57,6 @@ public class SharedCoin extends HttpServlet {
     private static final long MaxPollTime = 5000;
 
     private static final double DefaultFeePercent = 0.0; //Per rep
-    private static final long MinimumFee = (long) (COIN * 0.0005); //Network Fee. At this point transaction fees start costing more
 
     private static final long HardErrorMaximumOutputValue = COIN * 55; //55 BTC
     public static final long MaximumOutputValue = COIN * 50; //50 BTC
@@ -101,6 +100,10 @@ public class SharedCoin extends HttpServlet {
     @Deprecated
     private static final long VarianceWhenMimicingOutputValueDepreciated = 25; //25%
 
+    public static long getMinimumFee() {
+        return Settings.instance().getLong("minimum_fee");
+    }
+
     public static long getRandomRoundMinSignificant() {
         return Settings.instance().getLong("random_round_min_significant");
     }
@@ -130,7 +133,7 @@ public class SharedCoin extends HttpServlet {
     }
 
     public long getMaxTotalFeePayingOutputValue() {
-        return (getMaxOutputSplits()-1) * MaximumOutputValue;
+        return (getMaxOutputSplits() - 1) * MaximumOutputValue;
     }
 
     public static Set<Hash> getRecentlyCompletedTransactionHashes() {
@@ -1638,21 +1641,20 @@ public class SharedCoin extends HttpServlet {
 
                 final BigInteger[] proposedSplits = Util.splitBigInt(BigInteger.valueOf(feePayingOutputValue), nSplits);
 
-                //Round at least one output commonly
-                double rand = Math.random();
-                if (rand > 0.25) {
+                if (proposedSplits.length > 1) {
+                    //Round at least one output commonly
                     BigInteger[] rounded = Util.randomRound(proposedSplits[0], proposedSplits[1], getRandomRoundMinSignificant());
 
                     proposedSplits[0] = rounded[0];
                     proposedSplits[1] = rounded[1];
-                }
 
-                //Round a second output more rarely
-                if (rand > 0.75 && proposedSplits.length > 2) {
-                    BigInteger[] rounded = Util.randomRound(proposedSplits[1], proposedSplits[2], getRandomRoundMinSignificant());
+                    //Round a second output more rarely
+                    if (proposedSplits.length > 2) {
+                        rounded = Util.randomRound(proposedSplits[1], proposedSplits[2], getRandomRoundMinSignificant());
 
-                    proposedSplits[1] = rounded[0];
-                    proposedSplits[2] = rounded[1];
+                        proposedSplits[1] = rounded[0];
+                        proposedSplits[2] = rounded[1];
+                    }
                 }
 
                 //Check the proposed splits are within the max and min output value range
@@ -1692,15 +1694,15 @@ public class SharedCoin extends HttpServlet {
             //I the user has paid a percentage fee we need to mimic that we paid a similar amount
             long fee = 0;
             if (offer.getFeePercent() > 0) {
-                double donationPercent = (Math.random() * (DonationPercentMax-DonationPercentMin)) + DonationPercentMin;
+                double donationPercent = (Math.random() * (DonationPercentMax - DonationPercentMin)) + DonationPercentMin;
 
                 fee = (long) ((feePayingOutputValue / 100d) * donationPercent);
             }
 
             //All offers include a network fee
-            fee += MinimumFee;
+            fee += getMinimumFee();
 
-            if (!addInputsForValue(unspent, newOffer, totalSplitValue.longValue()+fee)) {
+            if (!addInputsForValue(unspent, newOffer, totalSplitValue.longValue() + fee)) {
                 Logger.log(Logger.SeverityWARN, "Error Adding inputs for offer");
                 return false;
             }
@@ -3372,9 +3374,9 @@ public class SharedCoin extends HttpServlet {
                         long expectedFee = offer.calculateFeeExpected();
                         if (version >= 5) {
                             //Version 3 changed to a specific percentage + base network fee
-                            expectedFee = expectedFee + MinimumFee;
+                            expectedFee = expectedFee + getMinimumFee();
                         } else if (version >= 2) {
-                            expectedFee = Math.max(expectedFee, MinimumFee);
+                            expectedFee = Math.max(expectedFee, getMinimumFee());
                         }
 
                         final long feePaid = totalInputValue - totalOutputValue;
@@ -3383,7 +3385,7 @@ public class SharedCoin extends HttpServlet {
                             Logger.log(Logger.SeveritySeriousError, AdminServlet.getRealIP(req) + " Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
 
                             //Only make it fatal when less than minimum
-                            if (feePaid < MinimumFee)
+                            if (feePaid < getMinimumFee())
                                 throw new Exception("Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
                         }
 
@@ -3551,7 +3553,7 @@ public class SharedCoin extends HttpServlet {
                             obj.put("recommended_iterations", Util.randomLong(getRecommendedIterationsMin(), getRecommendedIterationsMax()));
                         }
 
-                        obj.put("minimum_fee", MinimumFee);
+                        obj.put("minimum_fee", getMinimumFee());
 
                         res.setContentType("application/json");
 

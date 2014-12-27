@@ -24,6 +24,7 @@
 		"offer_force_proposal_age_max" : 120000,
 		"max_output_splits" : 5,
 		"min_output_splits" : 2,
-		"random_round_min_significant" : 3
+		"random_round_min_significant" : 3,
+		"minimum_fee" : 20000
  	}
 }
