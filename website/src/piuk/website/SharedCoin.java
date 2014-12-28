@@ -698,15 +698,14 @@ public class SharedCoin extends HttpServlet {
             final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
             for (Offer offer : offers) {
-
                 nInputs += offer.getOfferedOutpoints().size();
                 nOutputs += offer.getRequestedOutputs().size();
 
-                if (nInputs >= Proposal.getTargets().get("number_of_inputs_after_mix").longValue()) {
+                if (nInputs >= Proposal.getTargets().get("number_of_inputs_before_mix").longValue()) {
                     break;
                 }
 
-                if (nOutputs >= Proposal.getTargets().get("number_of_outputs_after_mix").longValue()) {
+                if (nOutputs >= Proposal.getTargets().get("number_of_outputs_before_mix").longValue()) {
                     break;
                 }
 
@@ -738,10 +737,13 @@ public class SharedCoin extends HttpServlet {
                     //If none are contained add them to the set
                     inputTransactionHashes.addAll(offerInputTransactionHashes);
                 }
-
+                //If the client hasn't been in touch recently it might no longer be active
+                //To avoid potential disruption to other users stick it in its own proposal
+                boolean clientNotInTouchRecently = offer.getClientLastContact() < System.currentTimeMillis() - (MaxPollTime * 2);
                 boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
 
-                if (!hasFailedToSign) {
+                if (!hasFailedToSign || clientNotInTouchRecently) {
+                    //Stick the offer on a proposal on its own
                     if (!proposal.addOffer(offer)) {
                         throw new Exception("Error Adding Offer To Proposal");
                     }
@@ -1410,6 +1412,7 @@ public class SharedCoin extends HttpServlet {
 
                     selectedBeans.add(outpoint);
 
+                    //Do we need this?
                     if (selectedBeans.size() > Proposal.getTargets().get("number_of_inputs_after_mix").longValue() && !allowUnconfirmed) {
                         break;
                     }
@@ -1615,9 +1618,13 @@ public class SharedCoin extends HttpServlet {
             }
 
             long feePayingOutputValue = 0;
+            long totalChangeOffer = 0;
+
             for (Output out : offer.getRequestedOutputs()) {
                 if (!out.isExcludeFromFee()) {
-                    feePayingOutputValue += out.value;
+                    feePayingOutputValue += out.getValue();
+                } else {
+                    totalChangeOffer += out.getValue();
                 }
             }
 
@@ -1636,7 +1643,6 @@ public class SharedCoin extends HttpServlet {
 
             //Is it impossible to ever get stuck in a endless loop here?
             while (true) {
-
                 int nSplits = (int) (Math.random() * (maxSplits - minSplits)) + minSplits;
 
                 final BigInteger[] proposedSplits = Util.splitBigInt(BigInteger.valueOf(feePayingOutputValue), nSplits);
@@ -1709,7 +1715,7 @@ public class SharedCoin extends HttpServlet {
 
             {
                 //Here we consume any excess change
-                //So total the
+                //So total the input and subtract the total value output
                 BigInteger totalValueInput = BigInteger.ZERO;
                 for (OutpointWithValue outpoint : newOffer.getOfferedOutpoints()) {
                     totalValueInput = totalValueInput.add(BigInteger.valueOf(outpoint.getValue()));
@@ -1720,12 +1726,42 @@ public class SharedCoin extends HttpServlet {
                 if (remainder.compareTo(BigInteger.valueOf(MinimumOutputValueExcludeFee)) > 0) {
                     final Output outOne = new Output();
 
-                    outOne.excludeFromFee = false;
+                    outOne.excludeFromFee = true;
                     outOne.script = ScriptBuilder.createOutputScript(getRandomAddressNotInUse(unspent)).getProgram();
                     outOne.value = remainder.longValue();
 
                     newOffer.addRequestedOutput(outOne);
                 }
+            }
+
+            long totalFeePayingOutputNewOffer = 0;
+            long totalChangeNewOffer = 0;
+
+            for (Output outpointWithValue : newOffer.getRequestedOutputs()) {
+                if (!outpointWithValue.isExcludeFromFee()) {
+                    totalFeePayingOutputNewOffer += outpointWithValue.getValue();
+                } else {
+                    totalChangeNewOffer += outpointWithValue.getValue();
+                }
+            }
+
+            long offerInputValue = 0;
+            for (OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
+                offerInputValue += outpointWithValue.getValue();
+            }
+
+            long newOfferInputValue = 0;
+            for (OutpointWithValue outpointWithValue : newOffer.getOfferedOutpoints()) {
+                newOfferInputValue += outpointWithValue.getValue();
+            }
+
+            if (offer.getFeePercent() == 0 && (offerInputValue - totalChangeOffer) != (newOfferInputValue - totalChangeNewOffer)) {
+                Logger.log(Logger.SeveritySeriousError, "(offerInputValue - totalChangeOffer) != (newOfferInputValue - totalChangeNewOffer) difference: " + ((offerInputValue - totalChangeOffer) != (newOfferInputValue - totalChangeNewOffer)));
+            }
+
+
+            if (totalFeePayingOutputNewOffer != feePayingOutputValue) {
+                Logger.log(Logger.SeveritySeriousError, "totalFeePayingOutputNewOffer != feePayingOutputValue (" + totalFeePayingOutputNewOffer + " != " + feePayingOutputValue + ")");
             }
 
             Logger.log(Logger.SeverityINFO, "addOutputsWhichMimicsOffer() Add Our Offer " + newOffer + " activeProposals " + activeProposals.keySet());
@@ -2735,6 +2771,7 @@ public class SharedCoin extends HttpServlet {
         private transient long forceProposalMaxAge;
         private transient String hashedUserIP;
         private transient int version;
+        private transient long clientLastContact;
 
         public Offer() {
             offerID = randomID();
@@ -2743,6 +2780,10 @@ public class SharedCoin extends HttpServlet {
 
         public int getVersion() {
             return version;
+        }
+
+        public long getClientLastContact() {
+            return clientLastContact;
         }
 
         public Token getToken() {
@@ -3091,6 +3132,8 @@ public class SharedCoin extends HttpServlet {
                         Offer offer = new Offer();
 
                         offer.version = version;
+
+                        offer.clientLastContact = System.currentTimeMillis();
 
                         Logger.log(Logger.SeverityINFO, "Submit Offer Received From " + userIP);
 
@@ -3494,6 +3537,8 @@ public class SharedCoin extends HttpServlet {
                         if (offer == null) {
                             obj.put("status", "not_found");
                         } else {
+                            offer.clientLastContact = System.currentTimeMillis();
+
                             Proposal proposal = findActiveProposalFromOffer(offer);
 
                             if (proposal == null) {

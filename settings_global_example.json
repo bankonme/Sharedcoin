@@ -12,7 +12,9 @@
 		"cloudflare_enabled" : true,
 		"cors_domains" : ["List of CORS permitted domains or wildcard *"],
 		"proposal_targets" : {
-		"number_of_inputs_after_mix" : 25,
+			"number_of_inputs_before_mix" : 10,
+			"number_of_outputs_before_mix" : 6,
+			"number_of_inputs_after_mix" : 25,
 			"number_of_outputs_after_mix" : 15,
 			"number_of_inputs_after_construction" : 25,
 			"number_of_outputs_after_construction" : 20,
