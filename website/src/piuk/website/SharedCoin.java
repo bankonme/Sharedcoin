@@ -737,20 +737,19 @@ public class SharedCoin extends HttpServlet {
                     //If none are contained add them to the set
                     inputTransactionHashes.addAll(offerInputTransactionHashes);
                 }
+                
                 //If the client hasn't been in touch recently it might no longer be active
-                //To avoid potential disruption to other users stick it in its own proposal
-                boolean clientNotInTouchRecently = offer.getClientLastContact() < System.currentTimeMillis() - (MaxPollTime * 2);
+                boolean clientPossiblyGoneAway = offer.getClientLastContact() < System.currentTimeMillis() - (MaxPollTime * 2);
+
+                //We only allow IPs that have failed to sign to join a proposal on their own
                 boolean hasFailedToSign = DOSManager.hasHashedIPFailedToSign(offer.getHashedUserIP());
 
-                if (!hasFailedToSign || clientNotInTouchRecently) {
-                    //Stick the offer on a proposal on its own
+                if (!hasFailedToSign && !clientPossiblyGoneAway) {
                     if (!proposal.addOffer(offer)) {
                         throw new Exception("Error Adding Offer To Proposal");
                     }
                 } else if (proposal.getOffers().size() == 0) {
-                    //We only allow IPs that have failed to sign to join a proposal on their own
-                    //That way it doesn't affect other users
-
+                    //To avoid potential disruption to other users stick it in its own proposal
                     if (!proposal.addOffer(offer)) {
                         throw new Exception("Error Adding Offer To Proposal");
                     }
