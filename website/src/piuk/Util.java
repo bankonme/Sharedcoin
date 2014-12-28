@@ -45,6 +45,9 @@ public final class Util {
 
         BigInteger modifier = BigInteger.valueOf((long) Math.pow(10L, Util.randomLong(minSignificant, digitCount - 1)));
 
+        if (modifier.compareTo(BigInteger.ZERO) == 0)
+            return new BigInteger[] {val1, val2};
+
         BigInteger val1Rounded = val1.divide(modifier).multiply(modifier);
 
         BigInteger roundedRemainder = total.subtract(val1Rounded);
