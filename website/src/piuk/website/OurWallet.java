@@ -339,7 +339,7 @@ public class OurWallet {
                 if (SharedCoin.isAddressInUse(address)
                         || SharedCoin.isAddressTargetOfAnActiveOutput(address)
                         || isAddressWeRecentlySpent(address)
-                        || SharedCoin.findCompletedTransactionConsumingAddress(address, 600000) != null) {
+                        || SharedCoin.findCompletedTransactionConsumingAddress(address) != null) {
                     continue;
                 }
 
@@ -447,7 +447,7 @@ public class OurWallet {
                     if (!SharedCoin.isAddressInUse(address)
                             && !SharedCoin.isAddressTargetOfAnActiveOutput(address)
                             && !isAddressWeRecentlySpent(address)
-                            && SharedCoin.findCompletedTransactionConsumingAddress(address, 600000) == null) {
+                            && SharedCoin.findCompletedTransactionConsumingAddress(address) == null) {
                         unusedAddresses.add(address);
                     }
                 }
@@ -475,7 +475,7 @@ public class OurWallet {
                 if (SharedCoin.isAddressInUse(address)
                         || SharedCoin.isAddressTargetOfAnActiveOutput(address)
                         || isAddressWeRecentlySpent(address)
-                        || SharedCoin.findCompletedTransactionConsumingAddress(address, 600000) != null) {
+                        || SharedCoin.findCompletedTransactionConsumingAddress(address) != null) {
                     continue;
                 }
 
