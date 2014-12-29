@@ -137,6 +137,7 @@ public class MyTransaction extends Transaction implements Serializable {
 		if (transactionDict.get("block_height") != null) {
 			height = ((Number) transactionDict.get("block_height")).intValue();
 		}
+
 		if (transactionDict.get("double_spend") != null) {
 			double_spend = ((Boolean) transactionDict.get("double_spend"))
 					.booleanValue();
