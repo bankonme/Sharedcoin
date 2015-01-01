@@ -70,7 +70,7 @@ public class SharedCoin extends HttpServlet {
     private static final long MaximumOfferNumberOfOutputs = 10;
 
     private static final double MaxChangePercentageSingleUnconfirmedInput = 500;
-    private static final double MaxChangePercentageSingleConfirmedInput = 300;
+    private static final double MaxChangePercentageSingleConfirmedInput = 500;
 
     public static final long ProtocolVersion = 6;
     private static final long MinSupportedVersion = 2;
@@ -90,7 +90,7 @@ public class SharedCoin extends HttpServlet {
 
     private static final long TokenExpiryTime = 86400000; //Expiry time of tokens. 24 hours
 
-    public static final int scriptSigSize = 120; //107 compressed
+    public static final int scriptSigSize = 138; //107 compressed
 
     public static final BigInteger TransactionFeePer1000Bytes = BigInteger.valueOf((long) (COIN * 0.0001)); //0.0001 BTC Fee
 
@@ -246,6 +246,7 @@ public class SharedCoin extends HttpServlet {
         long fee;
 
         private transient long expected_fee = 0;
+        private transient AtomicBoolean isPushing = new AtomicBoolean();
 
         public boolean getIsConfirmed() {
             return isConfirmed;
@@ -347,29 +348,36 @@ public class SharedCoin extends HttpServlet {
         }
 
         public boolean pushTransaction() throws Exception {
+            if (isPushing.compareAndSet(false, true)) {
+                try {
+                    if (completedTime == 0)
+                        completedTime = System.currentTimeMillis();
 
-            if (completedTime == 0)
-                completedTime = System.currentTimeMillis();
+                    boolean pushed = false;
 
-            boolean pushed = false;
+                    try {
+                        pushed = MyRemoteWallet.pushTx(transaction);
+                    } catch (Exception e) {
+                        Logger.log(Logger.SeveritySeriousError, e);
+                    }
 
-            try {
-                pushed = MyRemoteWallet.pushTx(transaction);
-            } catch (Exception e) {
-                Logger.log(Logger.SeveritySeriousError, e);
+                    if (!pushed) {
+                        Logger.log(Logger.SeveritySeriousError, "Error Pushing transaction " + transaction);
+                    }
+
+                    pushCount += 1;
+
+                    synchronized (this) {
+                        this.notifyAll();
+                    }
+
+                    return pushed;
+                } finally {
+                    isPushing.set(false);
+                }
+            } else {
+                return false;
             }
-
-            if (!pushed) {
-                Logger.log(Logger.SeveritySeriousError, "Error Pushing transaction " + transaction);
-            }
-
-            pushCount += 1;
-
-            synchronized (this) {
-                this.notifyAll();
-            }
-
-            return pushed;
         }
 
         public long getProposalID() {
@@ -576,8 +584,11 @@ public class SharedCoin extends HttpServlet {
                 age = now - completedTime;
             }
 
+            if (completedTransaction.isPushing == null)
+                completedTransaction.isPushing = new AtomicBoolean();
+
             //Wait until a transaction is at least a few seconds old before checking
-            if (age < 30000) {
+            if (age < 10000 || completedTransaction.isPushing.get()) {
                 continue;
             }
 
@@ -604,8 +615,9 @@ public class SharedCoin extends HttpServlet {
                     completedTransaction.isConfirmedBroadcastSuccessfully = false;
                 }
 
-                if (!didAlreadyFail)
+                if (!didAlreadyFail) {
                     continue;
+                }
 
                 Logger.log(Logger.SeveritySeriousError, "Transaction Not Found " + completedTransaction.getTransaction().getHash() + ". Proposal Age " + age + "ms completedTransaction.getPushCount() " + completedTransaction.getPushCount());
 
@@ -936,7 +948,7 @@ public class SharedCoin extends HttpServlet {
             int nKB = (int) Math.ceil(tx.bitcoinSerialize().length / 1000d);
 
             boolean feeOk = transactionFee >= (nKB) * TransactionFeePer1000Bytes.longValue()
-                    && transactionFee < (nKB + 4) * TransactionFeePer1000Bytes.longValue();
+                    && transactionFee < (nKB + 10) * TransactionFeePer1000Bytes.longValue();
 
             if (!feeOk) {
                 throw new Exception("Sanity Check Failed. Unexpected Network Fee " + transactionFee + " != " + nKB + " * " + TransactionFeePer1000Bytes);
@@ -1382,54 +1394,38 @@ public class SharedCoin extends HttpServlet {
             return (int) scale + nDecimals;
         }
 
-        public long[] genNumbers(long sum, int n) {
-            long[] nums = new long[n];
-            long upperbound = Math.round(sum * 1.0 / n);
-            long offset = Math.round(0.5 * upperbound);
-
-            long cursum = 0;
-            Random random = new Random(new Random().nextInt());
-            for (int i = 0; i < n; i++) {
-                long rand = random.nextInt((int) upperbound) + offset;
-                if (cursum + rand > sum || i == n - 1) {
-                    rand = sum - cursum;
-                }
-                cursum += rand;
-                nums[i] = rand;
-                if (cursum == sum) {
-                    break;
-                }
-            }
-            return nums;
-        }
-
         private boolean addInputsForValue(final List<MyTransactionOutPoint> unspent, final Offer offer, final long totalValueNeeded, final Set<Hash> avoidHashes) throws Exception {
+            
+            final long maxOutpointsToSelect = Settings.instance().getLong("max_outpoints_to_select_in_mimic_offer");
+            final long targetMimicUniqueInputHashes =  Settings.instance().getLong("target_mimic_unique_input_hashes");
 
             final List<MyTransactionOutPoint> selectedBeans = new ArrayList<>();
 
             long totalValueSelected = 0;
 
-            for (int ii = 0; ii < 3; ++ii) {
+            //ii == 0 Confirmed Only
+            //ii == 1 Unconfirmed + Confirmed
+            //ii == 2 Unconfirmed + Confirmed Don't avoid hashes
+            for (int ii = 0; ii < 5; ++ii) {
                 selectedBeans.clear();
 
                 totalValueSelected = 0;
 
                 final Set<String> alreadyTested = new HashSet<>();
+                final Set<Hash> hashesUsed = new HashSet<>();
 
                 boolean allowUnconfirmed = false;
 
-                if (ii >= 1) {
+                if (ii == 1 || ii >= 3) {
                     allowUnconfirmed = true;
                 }
 
                 while (true) {
-                    final MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(totalValueNeeded - totalValueSelected, unspent, alreadyTested, allowUnconfirmed);
+                    final long valueNeeded = totalValueNeeded - totalValueSelected;
+
+                    final MyTransactionOutPoint outpoint = closestUnspentToValueNotInList(valueNeeded, unspent, alreadyTested, allowUnconfirmed);
 
                     if (outpoint == null) {
-                        break;
-                    }
-
-                    if (selectedBeans.size() > getMaxOutputSplits()) {
                         break;
                     }
 
@@ -1444,8 +1440,20 @@ public class SharedCoin extends HttpServlet {
                         continue;
                     }
 
+
+                    //Try and target a maximum unique number of input hashes
+                    //Increase when multiple offers per stage is implemented
+                    if (ii == 0 || ii == 1) {
+                        int nUniqueHashes = hashesUsed.size();
+
+                        //If we have used our limit of unique hashes and this hash is unique skip it
+                        if (nUniqueHashes >= targetMimicUniqueInputHashes && !hashesUsed.contains(hash)) {
+                            continue;
+                        }
+                    }
+
                     //Only use hashes we want to avoid if we have no alternative (i.e. this is the last attempt)
-                    if (ii < 2) {
+                    if (ii == 0 || ii == 1 || ii == 2 || ii == 3) {
                         //So if it is an outpoint from a hash we want to avoid ignore it
                         if (avoidHashes.contains(hash)) {
                             continue;
@@ -1454,7 +1462,13 @@ public class SharedCoin extends HttpServlet {
 
                     long outpointValue = outpoint.getValue().longValue();
 
-                    //If the transaction is unconfirmed
+                    if (selectedBeans.size() >= maxOutpointsToSelect-1) {
+                        if (outpointValue < valueNeeded) {
+                            continue;
+                        }
+                    }
+
+                        //If the transaction is unconfirmed
                     if (outpoint.getConfirmations() == 0) {
                         //Make sure we created it and it is ok to spend
                         final CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
@@ -1473,9 +1487,16 @@ public class SharedCoin extends HttpServlet {
 
                     selectedBeans.add(outpoint);
 
+                    hashesUsed.add(hash);
+
                     totalValueSelected += outpointValue;
 
                     if (totalValueSelected == totalValueNeeded || totalValueSelected > totalValueNeeded + MinimumNoneStandardOutputValue) {
+                        break;
+                    }
+
+                    //Dont select too many outpoints
+                    if (selectedBeans.size() >= maxOutpointsToSelect) {
                         break;
                     }
                 }
@@ -3318,14 +3339,12 @@ public class SharedCoin extends HttpServlet {
                         final long feePaid = totalInputValue - totalOutputValue;
 
                         if (feePaid < (expectedFee - MinimumNoneStandardOutputValue)) {
-                            Logger.log(Logger.SeveritySeriousError, AdminServlet.getRealIP(req) + " Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
-
                             //Only make it fatal when less than minimum
                             if (feePaid < getMinimumFee())
                                 throw new Exception("Insufficient Fee " + (totalInputValue - totalOutputValue) + " expected " + expectedFee);
                         }
 
-                        if (feePaid > (expectedFee + MinimumNoneStandardOutputValue)) {
+                        if (feePaid > (expectedFee + getMinimumFee())) {
                             throw new Exception("Paid too much fee. Possibly a client error. (Expected: " + expectedFee + " Paid: " + (totalInputValue - totalOutputValue) + ")");
                         }
 

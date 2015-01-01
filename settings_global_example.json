@@ -27,6 +27,8 @@
 		"max_output_splits" : 5,
 		"min_output_splits" : 2,
 		"random_round_min_significant" : 3,
-		"minimum_fee" : 20000
+		"minimum_fee" : 20000,
+		"max_outpoints_to_select_in_mimic_offer" : 10,
+		"target_mimic_unique_input_hashes" : 1
  	}
 }
