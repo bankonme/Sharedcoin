@@ -57,7 +57,7 @@ public final class Util {
 
     //Divide a big integer into n random parts
     public static BigInteger[] splitBigInt(BigInteger value, int n) {
-        if (n == 1) {
+        if (n <= 1) {
             return new BigInteger[] {value};
         }
 
@@ -69,6 +69,11 @@ public final class Util {
         }
 
         BigInteger mod = total.divide(value);
+
+        if (mod.compareTo(BigInteger.ZERO) == 0) {
+            return new BigInteger[] {value};
+        }
+
         total = BigInteger.ZERO;
         for (int i = 0; i < n; ++i) {
             values[i] = values[i].divide(mod);
