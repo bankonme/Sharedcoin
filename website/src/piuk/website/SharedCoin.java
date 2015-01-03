@@ -133,7 +133,7 @@ public class SharedCoin extends HttpServlet {
         return Settings.instance().getInt("min_output_splits"); //When an offer reaches this age force a proposal creation
     }
 
-    public long getMaxTotalFeePayingOutputValue() {
+    public static long getMaxTotalFeePayingOutputValue() {
         return (getMaxOutputSplits() - 1) * MaximumOutputValue;
     }
 
@@ -724,8 +724,6 @@ public class SharedCoin extends HttpServlet {
         Proposal proposal = new Proposal();
 
         {
-            int nInputs = 0;
-            int nOutputs = 0;
             Set<String> allDestinationAddresses = new HashSet<>();
 
             //Set used to make sure no two offers are combined which contain inputs from the same transaction.
@@ -734,8 +732,18 @@ public class SharedCoin extends HttpServlet {
             final List<Offer> offers = new ArrayList<>(pendingOffers.values());
 
             for (Offer offer : offers) {
-                nInputs += offer.getOfferedOutpoints().size();
-                nOutputs += offer.getRequestedOutputs().size();
+                long nInputs = proposal.getOfferedInputCount() + offer.getOfferedOutpoints().size();
+                long nOutputs = proposal.getRequestedOutputCount() + offer.getRequestedOutputs().size();
+                long totalFeePayingOutputValue = proposal.getFeePayingValueOutputRequested() + offer.getFeePayingValueOutputRequested();
+
+                if (offer.delayUntilTime > System.currentTimeMillis()) {
+                    continue;
+                }
+
+                if (totalFeePayingOutputValue >= getMaxTotalFeePayingOutputValue()) {
+                    if (proposal.getOffers().size() > 0)
+                        break;
+                }
 
                 if (nInputs >= Proposal.getTargets().get("number_of_inputs_before_mix").longValue()) {
                     if (proposal.getOffers().size() > 0)
@@ -837,7 +845,7 @@ public class SharedCoin extends HttpServlet {
 
                 //If our offers is zero then mixWithOurWallet() failed to mimic any outputs
                 if (proposal.getOurOffers().size() == 0) {
-                    throw new Exception("proposal.getOurOffers().size() == 0");
+                    throw new Exception("proposal.getOurOffers().size() == 0 " + proposal.getOffers());
                 }
 
                 if (proposal.getRequestedOutputCount() < MinNumberOfOutputs) {
@@ -853,8 +861,8 @@ public class SharedCoin extends HttpServlet {
             } catch (Exception e) {
                 synchronized (activeCompletePendingWriteLock) {
                     for (Offer offer : proposal.getOffers()) {
-                        //Make the offer wait longer before retrying
-                        offer.forceProposalMaxAge += getRecommendedForceProposalAgeMax();
+                        //Delay the offer
+                        offer.delayUntilTime = System.currentTimeMillis() + getRecommendedForceProposalAgeMax();
 
                         //Add back into pending
                         addOfferToPending(offer);
@@ -946,6 +954,14 @@ public class SharedCoin extends HttpServlet {
                 }
             }
             return avoidHashes;
+        }
+
+        public long getFeePayingValueOutputRequested() {
+            long totalFeePayingOutputRequested = 0;
+            for (Offer offer : offers) {
+                totalFeePayingOutputRequested += offer.getFeePayingValueOutputRequested();
+            }
+            return totalFeePayingOutputRequested;
         }
 
         public boolean sanityCheckBeforePush() throws Exception {
@@ -1410,7 +1426,7 @@ public class SharedCoin extends HttpServlet {
         private boolean addInputsForValue(final List<MyTransactionOutPoint> unspent, final Offer offer, final long totalValueNeeded, final Set<Hash> avoidHashes) throws Exception {
 
             final long maxOutpointsToSelect = Settings.instance().getLong("max_outpoints_to_select_in_mimic_offer");
-            final long targetMimicUniqueInputHashes =  Settings.instance().getLong("target_mimic_unique_input_hashes");
+            final long targetMimicUniqueInputHashes = Settings.instance().getLong("target_mimic_unique_input_hashes");
 
             final List<MyTransactionOutPoint> selectedBeans = new ArrayList<>();
 
@@ -1475,13 +1491,13 @@ public class SharedCoin extends HttpServlet {
 
                     long outpointValue = outpoint.getValue().longValue();
 
-                    if (selectedBeans.size() >= maxOutpointsToSelect-1) {
+                    if (selectedBeans.size() >= maxOutpointsToSelect - 1) {
                         if (outpointValue < valueNeeded) {
                             continue;
                         }
                     }
 
-                        //If the transaction is unconfirmed
+                    //If the transaction is unconfirmed
                     if (outpoint.getConfirmations() == 0) {
                         //Make sure we created it and it is ok to spend
                         final CompletedTransaction createdIn = findCompletedTransaction(new Hash(outpoint.getTxHash().getBytes()));
@@ -2047,7 +2063,7 @@ public class SharedCoin extends HttpServlet {
                         break;
                     }
 
-                    if (transaction.bitcoinSerialize().length >= MaximumSoftTransactionSize) {
+                    if (Math.ceil(transaction.bitcoinSerialize().length / 1000d) >= MaximumSoftTransactionSize) {
                         break;
                     }
 
@@ -2668,6 +2684,7 @@ public class SharedCoin extends HttpServlet {
         private List<OutpointWithValue> offeredOutpoints = new CopyOnWriteArrayList<>();
         private List<Output> requestedOutputs = new CopyOnWriteArrayList<>();
         private double feePercent;
+        private transient long delayUntilTime;
         private transient Token token;
         private transient long forceProposalMaxAge;
         private transient String hashedUserIP;
@@ -2732,19 +2749,7 @@ public class SharedCoin extends HttpServlet {
             if (getFeePercent() == 0) {
                 return 0;
             } else {
-                long totalFeePayingOutputValue = 0;
-                boolean hasBeenExcludedFromFee = false;
-                for (Output output : getRequestedOutputs()) {
-                    if (output.excludeFromFee) {
-                        if (hasBeenExcludedFromFee) {
-                            throw new Exception("You can only exclude one input from fee");
-                        } else {
-                            hasBeenExcludedFromFee = true;
-                        }
-                    } else {
-                        totalFeePayingOutputValue += output.value;
-                    }
-                }
+                long totalFeePayingOutputValue = getFeePayingValueOutputRequested();
 
                 if (totalFeePayingOutputValue == 0)
                     throw new Exception("You must have at least one fee paying output");
