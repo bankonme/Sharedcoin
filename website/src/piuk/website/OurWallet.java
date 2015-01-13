@@ -347,6 +347,11 @@ public class OurWallet {
                     unusedAddresses.add(address);
                 }
 
+                final SharedCoin.CompletedTransaction completedTransaction = SharedCoin.findCompletedTransactionTargetingAddress(address);
+                if (completedTransaction != null && !completedTransaction.isOkToSpend()) {
+                    continue;
+                }
+
                 if (!addedAddressForFee && balance.compareTo(BigInteger.valueOf(SharedCoin.COIN)) >= 0) {
 
                     toCombineAddresses.add(address);
@@ -478,6 +483,12 @@ public class OurWallet {
                         || SharedCoin.findCompletedTransactionConsumingAddress(address) != null) {
                     continue;
                 }
+
+                final SharedCoin.CompletedTransaction completedTransaction = SharedCoin.findCompletedTransactionTargetingAddress(address);
+                if (completedTransaction != null && !completedTransaction.isOkToSpend()) {
+                    continue;
+                }
+
 
                 if (balance.longValue() >= ForceDivideLargeOutputSize) {
                     divideAddress = address;
