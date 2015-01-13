@@ -4,6 +4,7 @@ import org.bitcoinj.core.*;
 
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import piuk.common.Pair;
 import piuk.website.AdminServlet;
 import piuk.website.SharedCoin;
 
@@ -52,7 +53,11 @@ public class DOSManager {
 
     private static final Cache<String, String> _ipAddressesWhichRefusedToSign = CacheBuilder.newBuilder()
             .maximumSize(10000)
-            .expireAfterWrite(4, TimeUnit.HOURS).build();
+            .expireAfterWrite(6, TimeUnit.HOURS).build();
+
+    private static final Cache<SharedCoin.OutpointWithValue, SharedCoin.OutpointWithValue> _outpointsWhichRefusedToSign = CacheBuilder.newBuilder()
+            .maximumSize(10000)
+            .expireAfterWrite(6, TimeUnit.HOURS).build();
 
     private static final Cache<String, List<RequestContainer>> _latestRequests = CacheBuilder.newBuilder()
             .maximumSize(10000)
@@ -115,20 +120,28 @@ public class DOSManager {
         int index = 0;
         for (TransactionInput input : tx.getInputs()) {
 
-            Hash outpointHash = new Hash(input.getOutpoint().getHash().getBytes());
+            final Hash outpointHash = new Hash(input.getOutpoint().getHash().getBytes());
             long outpointIndex = input.getOutpoint().getIndex();
 
             //If the index key is missing then no signature was submitted
             if (!proposal.getInput_scripts().containsKey(index)) {
-
                 for (SharedCoin.Offer offer : proposal.getOffers()) {
                     for (SharedCoin.OutpointWithValue outpointWithValue : offer.getOfferedOutpoints()) {
                         if (outpointWithValue.getHash().equals(outpointHash) && outpointWithValue.getIndex() == outpointIndex) {
-                            Logger.log(Logger.SeverityWARN, "IP Failed To Sign Proposal " + offer.getHashedUserIP());
+                            if (!_ipAddressesWhichRefusedToSign.asMap().containsKey(offer.getHashedUserIP())) {
+                                Logger.log(Logger.SeverityWARN, "IP Failed To Sign Proposal " + offer.getHashedUserIP());
 
-                            //This is the offer which requested that outpoint but refused to sign
-                            //Log it as the offender
-                            _ipAddressesWhichRefusedToSign.put(offer.getHashedUserIP(), offer.getHashedUserIP());
+                                //This is the offer which requested that outpoint but refused to sign
+                                //Log it as the offender
+                                _ipAddressesWhichRefusedToSign.put(offer.getHashedUserIP(), offer.getHashedUserIP());
+                            }
+
+                            if (!_outpointsWhichRefusedToSign.asMap().containsKey(outpointWithValue)) {
+                                Logger.log(Logger.SeverityWARN, "Outpoint Failed To Sign Proposal " + outpointWithValue);
+
+                                _outpointsWhichRefusedToSign.put(outpointWithValue, outpointWithValue);
+                            }
+
                             break;
                         }
                     }
@@ -141,5 +154,9 @@ public class DOSManager {
 
     public static boolean hasHashedIPFailedToSign(String hashedIP) {
         return _ipAddressesWhichRefusedToSign.asMap().containsKey(hashedIP);
+    }
+
+    public static boolean hasOutpointFailedToSign(SharedCoin.OutpointWithValue outpointWithValue) {
+        return _outpointsWhichRefusedToSign.asMap().containsKey(outpointWithValue);
     }
 }
