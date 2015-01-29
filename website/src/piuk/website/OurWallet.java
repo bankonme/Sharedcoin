@@ -241,21 +241,21 @@ public class OurWallet {
             for (List<String> batch : batches) {
                 Logger.log(Logger.SeverityINFO, "OurWallet.cleanOutFullyConfirmedAddresses() batch " + batch);
 
-                final Map<String, Long> extraBalances = MyRemoteWallet.getMultiAddrBalances(batch);
+                final Map<String, MyRemoteWallet.SimpleMultiAddrContainer> extraBalances = MyRemoteWallet.getMultiAddrBalances(batch);
 
                 for (String address : batch) {
                     if (address == null)
                         continue;
 
-                    final Long balance = extraBalances.get(address);
+                    final MyRemoteWallet.SimpleMultiAddrContainer container = extraBalances.get(address);
 
-                    if (balance != null) {
+                    if (container != null) {
                         //Un-archive any addresses with a none zero balance
-                        if (balance > 0) {
+                        if (container.final_balance > 0 || container.n_tx == 0) {
                             Logger.log(Logger.SeverityINFO, "OurWallet.cleanOutFullyConfirmedAddresses() Unarchive " + address);
 
                             pendingOperations.add(new UnarchiveArchiveWalletOperation(address));
-                        } else if (balance == 0) {
+                        } else if (container.final_balance == 0) {
                             long blockHeight = MyRemoteWallet.getMaxConfirmingBlockHeightForTransactionConfirmations(address);
 
                             if (blockHeight > 0 && blockHeight <= maxDeletionBlockHeight) {

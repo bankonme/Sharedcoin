@@ -475,7 +475,13 @@ public class MyRemoteWallet extends MyWallet {
     }
 
 
-    public static Map<String, Long> getMultiAddrBalances(List<String> addresses) throws Exception {
+    public static class SimpleMultiAddrContainer {
+        public long final_balance;
+        public int n_tx;
+        public long total_received;
+    }
+
+    public static Map<String, SimpleMultiAddrContainer> getMultiAddrBalances(List<String> addresses) throws Exception {
         String url = "multiaddr";
 
         String params = "simple=true&active=" + StringUtils.join(addresses, "|");
@@ -484,13 +490,19 @@ public class MyRemoteWallet extends MyWallet {
 
         Map<String, Object> top = (Map<String, Object>) JSONValue.parse(response);
 
-        Map<String, Long> results = new HashMap<>();
+        final Map<String, SimpleMultiAddrContainer> results = new HashMap<>();
         for (Map.Entry<String, Object> entry : top.entrySet()) {
             String address = entry.getKey();
-            Long final_balance = Long.valueOf(((JSONObject) entry.getValue()).get("final_balance").toString());
 
-            results.put(address, final_balance);
+            final SimpleMultiAddrContainer container = new SimpleMultiAddrContainer();
+
+            container.final_balance = Long.valueOf(((JSONObject) entry.getValue()).get("final_balance").toString());
+            container.n_tx = Integer.valueOf(((JSONObject) entry.getValue()).get("n_tx").toString());
+            container.total_received = Long.valueOf(((JSONObject) entry.getValue()).get("total_received").toString());
+
+            results.put(address, container);
         }
+
         return results;
     }
 
