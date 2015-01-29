@@ -37,7 +37,7 @@ public class OurWallet {
     private static long lastCleanOutConfirmedTime = 0;
     private static Set<Hash> lastTidyRecentlyCompletedKeySet = new ConcurrentSkipListSet<>();
 
-    private static final long CombineDustMinimumOutputSize = SharedCoin.MinimumNoneStandardOutputValue;
+    private static final long CombineDustMinimumOutputSize = SharedCoin.HardErrorMinimumInputValue;
 
     private static final OurWallet instance = new OurWallet();
 
