@@ -29,6 +29,7 @@
 		"random_round_min_significant" : 3,
 		"minimum_fee" : 20000,
 		"max_outpoints_to_select_in_mimic_offer" : 10,
-		"target_mimic_unique_input_hashes" : 1
+		"target_mimic_unique_input_hashes" : 1,
+		"min_accepted_relay_count" : 200
  	}
 }

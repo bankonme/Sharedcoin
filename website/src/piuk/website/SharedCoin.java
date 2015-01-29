@@ -621,9 +621,11 @@ public class SharedCoin extends HttpServlet {
                         try {
                             JSONObject inv = MyRemoteWallet.getInventoryInfo(hash);
 
-                            int relayedCount = Integer.valueOf(inv.get("min_accepted_relay_count").toString());
+                            int relayedCount = Integer.valueOf(inv.get("relayed_count").toString());
 
-                            if (relayedCount > 100) {
+                            System.out.println("relayedCount " + relayedCount);
+                            
+                            if (relayedCount > Settings.instance().getInt("min_accepted_relay_count")) {
                                 completedTransaction.hasBeenRelayedSufficiently = true;
                             }
                         } catch (Exception e) {
