@@ -62,7 +62,7 @@ public class SharedCoin extends HttpServlet {
     private static final long HardErrorMaximumOutputValue = COIN * 55; //55 BTC
     public static final long MaximumOutputValue = COIN * 50; //50 BTC
 
-    private static final long HardErrorMinimumInputValue = (long) (COIN * 0.005); //0.005 BTC
+    public static final long HardErrorMinimumInputValue = (long) (COIN * 0.005); //0.005 BTC
     private static final long MinimumInputValue = (long) (COIN * 0.01); //0.01 BTC
 
     private static final long MaximumInputValue = COIN * 1000; //1000 BTC
@@ -237,6 +237,7 @@ public class SharedCoin extends HttpServlet {
         Transaction transaction;
         boolean isConfirmedBroadcastSuccessfully = false;
         boolean isConfirmed = false;
+        boolean hasBeenRelayedSufficiently = false;
         boolean isDoubleSpend = false;
 
         long lastCheckedConfirmed = 0;
@@ -306,6 +307,10 @@ public class SharedCoin extends HttpServlet {
             }
 
             if (!isConfirmedBroadcastSuccessfully) {
+                return false;
+            }
+
+            if (!hasBeenRelayedSufficiently) {
                 return false;
             }
 
@@ -598,7 +603,9 @@ public class SharedCoin extends HttpServlet {
                 boolean didAlreadyFail = !completedTransaction.isConfirmedBroadcastSuccessfully;
 
                 try {
-                    MyTransaction transaction = MyRemoteWallet.getTransactionByHash(new Hash(completedTransaction.transaction.getHash().getBytes()), false);
+                    final Hash hash = new Hash(completedTransaction.transaction.getHash().getBytes());
+
+                    MyTransaction transaction = MyRemoteWallet.getTransactionByHash(hash, false);
 
                     if (transaction == null) {
                         throw new Exception("Null Transaction");
@@ -610,8 +617,24 @@ public class SharedCoin extends HttpServlet {
 
                     completedTransaction.isConfirmed = transaction.getHeight() > 0;
 
+                    if (!completedTransaction.hasBeenRelayedSufficiently) {
+                        try {
+                            JSONObject inv = MyRemoteWallet.getInventoryInfo(hash);
+
+                            int relayedCount = Integer.valueOf(inv.get("min_accepted_relay_count").toString());
+
+                            if (relayedCount > 100) {
+                                completedTransaction.hasBeenRelayedSufficiently = true;
+                            }
+                        } catch (Exception e) {
+                            Logger.log(Logger.SeverityINFO, e);
+                        }
+                    }
+
                     continue;
                 } catch (Exception e) {
+                    Logger.log(Logger.SeverityINFO, e);
+
                     completedTransaction.isConfirmedBroadcastSuccessfully = false;
                 }
 
@@ -2158,7 +2181,7 @@ public class SharedCoin extends HttpServlet {
 
                             change = suitableOutPoint.getValue().subtract(remainderPositive);
                         } else {
-                           throw new Exception("constructTransaction() Unable To Select Change Outpoint");
+                            throw new Exception("constructTransaction() Unable To Select Change Outpoint");
                         }
 
                     } else {
@@ -3238,6 +3261,10 @@ public class SharedCoin extends HttpServlet {
                                 //Allow unconfirmed inputs from transaction we created
                                 if (!isTransactionCreatedByUs(hash)) {
                                     throw new Exception("Only confirmed inputs accepted " + hash);
+                                }
+
+                                if (transaction.isDouble_spend()) {
+                                    throw new Exception("Input Transaction Is a Double Spend");
                                 }
                             }
 

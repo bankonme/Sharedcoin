@@ -655,6 +655,16 @@ public class MyRemoteWallet extends MyWallet {
         return Hex.decode(response);
     }
 
+    public static JSONObject getInventoryInfo(Hash hash) throws Exception {
+        StringBuffer buffer = new StringBuffer("inv/" + hash + "?format=json");
+
+        String response = fetchAPI(buffer.toString());
+
+        Map<String, Object> root = (Map<String, Object>) JSONValue.parse(response);
+
+        return (JSONObject) root;
+    }
+
     public static MyTransaction getTransactionByHash(Hash hash, boolean scripts) throws Exception {
         StringBuffer buffer = new StringBuffer("tx/" + hash + "?format=json&show_adv=true&scripts=" + scripts);
 
